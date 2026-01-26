@@ -1,17 +1,16 @@
 import pytest
-from fastmcp.client import Client
-from fastmcp.client.transports import FastMCPTransport
+from fastmcp import Client
 
 from main import app as mcp_app
 
 
 @pytest.fixture
 async def main_mcp_client():
-    async with Client(transport=mcp_app) as mcp_client:
+    async with Client(mcp_app) as mcp_client:
         yield mcp_client
 
 
-async def test_get_blocks(main_mcp_client: Client[FastMCPTransport]):
+async def test_get_blocks(main_mcp_client: Client):
     """Test retrieving available blocks."""
     blocks = await main_mcp_client.call_tool(name="get_blocks")
     assert blocks.data is not None
@@ -19,14 +18,15 @@ async def test_get_blocks(main_mcp_client: Client[FastMCPTransport]):
     assert isinstance(blocks.data, list)
 
 
-async def test_make_and_remove_block(main_mcp_client: Client[FastMCPTransport]):
+async def test_make_and_remove_block(main_mcp_client: Client):
     """Test making a block and then removing it."""
     block_type = "analog_sig_source_x"
 
     # helper to check if block exists in the flowgraph
     async def get_block_names():
         current_blocks = await main_mcp_client.call_tool(name="get_blocks")
-        return [b["name"] for b in current_blocks.data]  # type: ignore
+        # FastMCP 3.0 returns Pydantic models in .data, use attribute access
+        return [b.name for b in current_blocks.data]
 
     # 1. Create a block
     result = await main_mcp_client.call_tool(
