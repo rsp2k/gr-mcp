@@ -180,7 +180,8 @@ class TestStopRemove:
         mock_container = MagicMock()
         mock_docker_client.containers.get.return_value = mock_container
         assert docker_mw.stop("test") is True
-        mock_container.stop.assert_called_once_with(timeout=10)
+        # Default timeout is 30s for graceful shutdown (coverage needs time)
+        mock_container.stop.assert_called_once_with(timeout=30)
 
     def test_remove(self, docker_mw, mock_docker_client):
         mock_container = MagicMock()
@@ -242,3 +243,142 @@ class TestGetXmlRpcPort:
         mock_docker_client.containers.get.return_value = mock_container
 
         assert docker_mw.get_xmlrpc_port("test") == DEFAULT_XMLRPC_PORT
+
+
+class TestCoverage:
+    def test_launch_with_coverage_uses_coverage_image(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
+        from gnuradio_mcp.middlewares.docker import COVERAGE_IMAGE, RUNTIME_IMAGE
+
+        fg_file = tmp_path / "test.grc"
+        fg_file.write_text("<flowgraph/>")
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        # Without coverage
+        docker_mw.launch(str(fg_file), "test-no-cov", enable_coverage=False)
+        call_args = mock_docker_client.containers.run.call_args
+        assert call_args.args[0] == RUNTIME_IMAGE
+
+        mock_docker_client.reset_mock()
+
+        # With coverage
+        docker_mw.launch(str(fg_file), "test-with-cov", enable_coverage=True)
+        call_args = mock_docker_client.containers.run.call_args
+        assert call_args.args[0] == COVERAGE_IMAGE
+
+    def test_launch_with_coverage_sets_env_and_label(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
+        fg_file = tmp_path / "test.grc"
+        fg_file.write_text("<flowgraph/>")
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        result = docker_mw.launch(str(fg_file), "test-cov", enable_coverage=True)
+
+        call_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        assert call_kwargs["environment"]["ENABLE_COVERAGE"] == "1"
+        assert call_kwargs["labels"]["gr-mcp.coverage-enabled"] == "1"
+        assert result.coverage_enabled is True
+
+    def test_launch_with_coverage_mounts_coverage_dir(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
+        from gnuradio_mcp.middlewares.docker import (
+            CONTAINER_COVERAGE_DIR,
+            HOST_COVERAGE_BASE,
+        )
+
+        fg_file = tmp_path / "test.grc"
+        fg_file.write_text("<flowgraph/>")
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        docker_mw.launch(str(fg_file), "test-cov-mount", enable_coverage=True)
+
+        call_kwargs = mock_docker_client.containers.run.call_args.kwargs
+        volumes = call_kwargs["volumes"]
+        # Coverage directory should be mounted
+        coverage_host_path = f"{HOST_COVERAGE_BASE}/test-cov-mount"
+        assert coverage_host_path in volumes
+        assert volumes[coverage_host_path]["bind"] == CONTAINER_COVERAGE_DIR
+        assert volumes[coverage_host_path]["mode"] == "rw"
+
+    def test_list_containers_includes_coverage_enabled(
+        self, docker_mw, mock_docker_client
+    ):
+        mock_container_cov = MagicMock()
+        mock_container_cov.name = "with-cov"
+        mock_container_cov.id = "aaa111"
+        mock_container_cov.status = "running"
+        mock_container_cov.labels = {
+            "gr-mcp.flowgraph": "/test.grc",
+            "gr-mcp.xmlrpc-port": "8080",
+            "gr-mcp.vnc-enabled": "0",
+            "gr-mcp.coverage-enabled": "1",
+        }
+
+        mock_container_no_cov = MagicMock()
+        mock_container_no_cov.name = "no-cov"
+        mock_container_no_cov.id = "bbb222"
+        mock_container_no_cov.status = "running"
+        mock_container_no_cov.labels = {
+            "gr-mcp.flowgraph": "/test2.grc",
+            "gr-mcp.xmlrpc-port": "8081",
+            "gr-mcp.vnc-enabled": "0",
+            "gr-mcp.coverage-enabled": "0",
+        }
+
+        mock_docker_client.containers.list.return_value = [
+            mock_container_cov,
+            mock_container_no_cov,
+        ]
+
+        result = docker_mw.list_containers()
+        assert len(result) == 2
+        assert result[0].coverage_enabled is True
+        assert result[1].coverage_enabled is False
+
+    def test_is_coverage_enabled(self, docker_mw, mock_docker_client):
+        mock_container = MagicMock()
+        mock_container.labels = {"gr-mcp.coverage-enabled": "1"}
+        mock_docker_client.containers.get.return_value = mock_container
+
+        assert docker_mw.is_coverage_enabled("test") is True
+
+        mock_container.labels = {"gr-mcp.coverage-enabled": "0"}
+        assert docker_mw.is_coverage_enabled("test") is False
+
+        mock_container.labels = {}
+        assert docker_mw.is_coverage_enabled("test") is False
+
+    def test_get_coverage_dir(self, docker_mw):
+        from pathlib import Path
+
+        from gnuradio_mcp.middlewares.docker import HOST_COVERAGE_BASE
+
+        result = docker_mw.get_coverage_dir("my-container")
+        expected = Path(HOST_COVERAGE_BASE) / "my-container"
+        assert result == expected
+
+    def test_stop_with_timeout_warning(self, docker_mw, mock_docker_client, caplog):
+        import logging
+
+        mock_container = MagicMock()
+        mock_container.stop.side_effect = Exception("Timeout waiting for container")
+        mock_docker_client.containers.get.return_value = mock_container
+
+        with caplog.at_level(logging.WARNING):
+            result = docker_mw.stop("test")
+
+        # Should still return True (container will be killed)
+        assert result is True
+        assert "didn't stop gracefully" in caplog.text

@@ -129,6 +129,7 @@ class ContainerModel(BaseModel):
     xmlrpc_port: int
     vnc_port: int | None = None
     device_paths: list[str] = []
+    coverage_enabled: bool = False
 
 
 class VariableModel(BaseModel):
@@ -155,3 +156,27 @@ class RuntimeStatusModel(BaseModel):
     connected: bool
     connection: ConnectionInfoModel | None = None
     containers: list[ContainerModel] = []
+
+
+# ──────────────────────────────────────────────
+# Coverage Models (Cross-Process Code Coverage)
+# ──────────────────────────────────────────────
+
+
+class CoverageDataModel(BaseModel):
+    """Summary of collected coverage data."""
+
+    container_name: str
+    coverage_file: str
+    summary: str
+    lines_covered: int | None = None
+    lines_total: int | None = None
+    coverage_percent: float | None = None
+
+
+class CoverageReportModel(BaseModel):
+    """Generated coverage report (HTML, XML, JSON)."""
+
+    container_name: str
+    format: Literal["html", "xml", "json"]
+    report_path: str

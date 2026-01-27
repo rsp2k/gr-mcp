@@ -125,6 +125,7 @@ class TestContainerLifecycle:
             name="my-fg",
             xmlrpc_port=9090,
             enable_vnc=True,
+            enable_coverage=False,
             device_paths=None,
         )
 
@@ -324,3 +325,251 @@ class TestVisualFeedback:
     def test_get_container_logs_requires_container(self, provider_with_docker):
         with pytest.raises(RuntimeError, match="No container specified"):
             provider_with_docker.get_container_logs()
+
+
+class TestCoverageCollection:
+    """Tests for coverage collection methods."""
+
+    def test_launch_with_coverage(self, provider_with_docker, mock_docker_mw, tmp_path):
+        fg = tmp_path / "test.grc"
+        fg.write_text("<flowgraph/>")
+
+        provider_with_docker.launch_flowgraph(
+            flowgraph_path=str(fg),
+            name="cov-test",
+            enable_coverage=True,
+        )
+
+        mock_docker_mw.launch.assert_called_once()
+        call_kwargs = mock_docker_mw.launch.call_args.kwargs
+        assert call_kwargs["enable_coverage"] is True
+
+    def test_collect_coverage_no_data(self, provider_with_docker):
+        with pytest.raises(FileNotFoundError, match="No coverage data"):
+            provider_with_docker.collect_coverage("nonexistent-container")
+
+    def test_collect_coverage_success(self, provider_with_docker, tmp_path, monkeypatch):
+        from gnuradio_mcp.models import CoverageDataModel
+        from gnuradio_mcp.middlewares.docker import HOST_COVERAGE_BASE
+
+        # Create fake coverage directory and file
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+        coverage_dir = tmp_path / "test-container"
+        coverage_dir.mkdir()
+        (coverage_dir / ".coverage").write_bytes(b"fake coverage data")
+
+        # Mock subprocess to return fake coverage report
+        def mock_run(cmd, **kwargs):
+            class FakeResult:
+                stdout = """Name          Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------
+module.py        100     20     40     10    75%
+-----------------------------------------------
+TOTAL            100     20     40     10    75%"""
+                stderr = ""
+                returncode = 0
+
+            return FakeResult()
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        result = provider_with_docker.collect_coverage("test-container")
+
+        assert isinstance(result, CoverageDataModel)
+        assert result.container_name == "test-container"
+        assert result.coverage_percent == 75.0
+        assert result.lines_total == 100
+        assert result.lines_covered == 80  # 100 - 20 missed
+
+    def test_generate_coverage_report_html(self, provider_with_docker, tmp_path, monkeypatch):
+        from gnuradio_mcp.models import CoverageReportModel
+
+        # Setup
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+        coverage_dir = tmp_path / "test-container"
+        coverage_dir.mkdir()
+        (coverage_dir / ".coverage").write_bytes(b"fake coverage data")
+
+        # Mock subprocess
+        def mock_run(cmd, **kwargs):
+            class FakeResult:
+                returncode = 0
+
+            # Create output file for HTML
+            if "html" in cmd:
+                html_dir = coverage_dir / "htmlcov"
+                html_dir.mkdir(exist_ok=True)
+                (html_dir / "index.html").write_text("<html>Coverage</html>")
+            return FakeResult()
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        result = provider_with_docker.generate_coverage_report("test-container", "html")
+
+        assert isinstance(result, CoverageReportModel)
+        assert result.format == "html"
+        assert "htmlcov" in result.report_path
+
+    def test_generate_coverage_report_xml(self, provider_with_docker, tmp_path, monkeypatch):
+        from gnuradio_mcp.models import CoverageReportModel
+
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+        coverage_dir = tmp_path / "test-container"
+        coverage_dir.mkdir()
+        (coverage_dir / ".coverage").write_bytes(b"fake coverage data")
+
+        def mock_run(cmd, **kwargs):
+            class FakeResult:
+                returncode = 0
+
+            return FakeResult()
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        result = provider_with_docker.generate_coverage_report("test-container", "xml")
+
+        assert isinstance(result, CoverageReportModel)
+        assert result.format == "xml"
+        assert "coverage.xml" in result.report_path
+
+    def test_generate_coverage_report_requires_coverage_file(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+        coverage_dir = tmp_path / "test-container"
+        coverage_dir.mkdir()
+        # No .coverage file
+
+        with pytest.raises(FileNotFoundError, match="No combined coverage file"):
+            provider_with_docker.generate_coverage_report("test-container", "html")
+
+    def test_combine_coverage(self, provider_with_docker, tmp_path, monkeypatch):
+        from gnuradio_mcp.models import CoverageDataModel
+
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+
+        # Create two containers with coverage data
+        for name in ["container-1", "container-2"]:
+            coverage_dir = tmp_path / name
+            coverage_dir.mkdir()
+            (coverage_dir / ".coverage").write_bytes(b"fake coverage")
+
+        def mock_run(cmd, **kwargs):
+            class FakeResult:
+                stdout = "TOTAL            200     40     80     20    75%"
+                stderr = ""
+                returncode = 0
+
+            # Create combined coverage file
+            if "combine" in cmd:
+                combined_dir = tmp_path / "combined"
+                combined_dir.mkdir(exist_ok=True)
+                (combined_dir / ".coverage").write_bytes(b"combined data")
+            return FakeResult()
+
+        monkeypatch.setattr("subprocess.run", mock_run)
+
+        result = provider_with_docker.combine_coverage(["container-1", "container-2"])
+
+        assert isinstance(result, CoverageDataModel)
+        assert result.container_name == "combined"
+
+    def test_combine_coverage_requires_names(self, provider_with_docker):
+        with pytest.raises(ValueError, match="At least one container"):
+            provider_with_docker.combine_coverage([])
+
+    def test_delete_coverage_specific(self, provider_with_docker, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+
+        # Create coverage directory
+        coverage_dir = tmp_path / "test-container"
+        coverage_dir.mkdir()
+        (coverage_dir / ".coverage").write_bytes(b"data")
+
+        deleted = provider_with_docker.delete_coverage(name="test-container")
+
+        assert deleted == 1
+        assert not coverage_dir.exists()
+
+    def test_delete_coverage_older_than(self, provider_with_docker, tmp_path, monkeypatch):
+        import os
+        import time
+
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+
+        # Create old and new coverage directories
+        old_dir = tmp_path / "old-container"
+        old_dir.mkdir()
+        # Set mtime to 10 days ago
+        old_time = time.time() - (10 * 86400)
+        os.utime(old_dir, (old_time, old_time))
+
+        new_dir = tmp_path / "new-container"
+        new_dir.mkdir()
+
+        deleted = provider_with_docker.delete_coverage(older_than_days=7)
+
+        assert deleted == 1
+        assert not old_dir.exists()
+        assert new_dir.exists()
+
+    def test_delete_coverage_all(self, provider_with_docker, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+
+        # Create multiple directories
+        (tmp_path / "container-1").mkdir()
+        (tmp_path / "container-2").mkdir()
+
+        deleted = provider_with_docker.delete_coverage()
+
+        assert deleted == 2
+        assert not (tmp_path / "container-1").exists()
+        assert not (tmp_path / "container-2").exists()
+
+    def test_delete_coverage_nonexistent(self, provider_with_docker, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
+        )
+        # tmp_path exists but is empty
+
+        deleted = provider_with_docker.delete_coverage(name="nonexistent")
+        assert deleted == 0
+
+    def test_parse_coverage_summary(self, provider_with_docker):
+        summary = """Name          Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------
+module.py        150     30     60     15    80%
+other.py          50     20     20      5    60%
+-----------------------------------------------
+TOTAL            200     50     80     20    75%"""
+
+        metrics = provider_with_docker._parse_coverage_summary(summary)
+
+        assert metrics["lines_total"] == 200
+        assert metrics["lines_covered"] == 150  # 200 - 50 missed
+        assert metrics["coverage_percent"] == 75.0
+
+    def test_parse_coverage_summary_no_total(self, provider_with_docker):
+        summary = "No coverage data collected"
+
+        metrics = provider_with_docker._parse_coverage_summary(summary)
+
+        assert metrics["lines_total"] is None
+        assert metrics["lines_covered"] is None
+        assert metrics["coverage_percent"] is None

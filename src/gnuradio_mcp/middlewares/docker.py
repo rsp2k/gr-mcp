@@ -11,8 +11,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_XMLRPC_PORT = 8080
 DEFAULT_VNC_PORT = 5900
+DEFAULT_STOP_TIMEOUT = 30  # Seconds to wait for graceful shutdown (coverage needs time)
 RUNTIME_IMAGE = "gnuradio-runtime:latest"
+COVERAGE_IMAGE = "gnuradio-coverage:latest"
 CONTAINER_FLOWGRAPH_DIR = "/flowgraphs"
+CONTAINER_COVERAGE_DIR = "/coverage"
+HOST_COVERAGE_BASE = "/tmp/gr-coverage"
 
 
 class DockerMiddleware:
@@ -44,16 +48,31 @@ class DockerMiddleware:
         name: str,
         xmlrpc_port: int = DEFAULT_XMLRPC_PORT,
         enable_vnc: bool = False,
+        enable_coverage: bool = False,
         device_paths: list[str] | None = None,
     ) -> ContainerModel:
-        """Launch a flowgraph in a Docker container with Xvfb."""
+        """Launch a flowgraph in a Docker container with Xvfb.
+
+        Args:
+            flowgraph_path: Path to the .py flowgraph file
+            name: Container name
+            xmlrpc_port: Port for XML-RPC variable control
+            enable_vnc: Enable VNC server for visual debugging
+            enable_coverage: Use coverage image and collect Python coverage data
+            device_paths: Host device paths to pass through (e.g., /dev/ttyUSB0)
+        """
         fg_path = Path(flowgraph_path).resolve()
         if not fg_path.exists():
             raise FileNotFoundError(f"Flowgraph not found: {fg_path}")
 
+        # Select image based on coverage mode
+        image = COVERAGE_IMAGE if enable_coverage else RUNTIME_IMAGE
+
         env = {"DISPLAY": ":99", "XMLRPC_PORT": str(xmlrpc_port)}
         if enable_vnc:
             env["ENABLE_VNC"] = "1"
+        if enable_coverage:
+            env["ENABLE_COVERAGE"] = "1"
 
         ports: dict[str, int] = {f"{xmlrpc_port}/tcp": xmlrpc_port}
         vnc_port: int | None = None
@@ -68,12 +87,21 @@ class DockerMiddleware:
             }
         }
 
+        # Mount coverage directory if coverage enabled
+        if enable_coverage:
+            coverage_dir = Path(HOST_COVERAGE_BASE) / name
+            coverage_dir.mkdir(parents=True, exist_ok=True)
+            volumes[str(coverage_dir)] = {
+                "bind": CONTAINER_COVERAGE_DIR,
+                "mode": "rw",
+            }
+
         devices = [f"{d}:{d}:rwm" for d in (device_paths or [])]
 
         container_fg_path = f"{CONTAINER_FLOWGRAPH_DIR}/{fg_path.name}"
 
         container = self._client.containers.run(
-            RUNTIME_IMAGE,
+            image,
             command=["python3", container_fg_path],
             name=name,
             detach=True,
@@ -86,6 +114,7 @@ class DockerMiddleware:
                 "gr-mcp.flowgraph": str(fg_path),
                 "gr-mcp.xmlrpc-port": str(xmlrpc_port),
                 "gr-mcp.vnc-enabled": "1" if enable_vnc else "0",
+                "gr-mcp.coverage-enabled": "1" if enable_coverage else "0",
             },
         )
 
@@ -97,6 +126,7 @@ class DockerMiddleware:
             xmlrpc_port=xmlrpc_port,
             vnc_port=vnc_port,
             device_paths=device_paths or [],
+            coverage_enabled=enable_coverage,
         )
 
     def list_containers(self) -> list[ContainerModel]:
@@ -117,14 +147,32 @@ class DockerMiddleware:
                     vnc_port=DEFAULT_VNC_PORT
                     if labels.get("gr-mcp.vnc-enabled") == "1" and c.status == "running"
                     else None,
+                    coverage_enabled=labels.get("gr-mcp.coverage-enabled") == "1",
                 )
             )
         return result
 
-    def stop(self, name: str) -> bool:
-        """Stop a container by name."""
+    def stop(self, name: str, timeout: int = DEFAULT_STOP_TIMEOUT) -> bool:
+        """Stop a container gracefully with SIGTERM.
+
+        Uses a longer timeout (30s) to allow coverage data to be flushed.
+        Falls back to SIGKILL if container doesn't respond, but warns that
+        coverage data may be lost.
+
+        Args:
+            name: Container name
+            timeout: Seconds to wait for graceful shutdown before SIGKILL
+        """
         container = self._client.containers.get(name)
-        container.stop(timeout=10)
+        try:
+            container.stop(timeout=timeout)
+        except Exception as e:
+            # Timeout reached, container will be killed - coverage may be lost
+            logger.warning(
+                "Container %s didn't stop gracefully within %ds, "
+                "coverage data may be lost: %s",
+                name, timeout, e
+            )
         return True
 
     def remove(self, name: str, force: bool = False) -> bool:
@@ -163,3 +211,12 @@ class DockerMiddleware:
         return int(
             container.labels.get("gr-mcp.xmlrpc-port", DEFAULT_XMLRPC_PORT)
         )
+
+    def is_coverage_enabled(self, name: str) -> bool:
+        """Check if coverage is enabled for a container."""
+        container = self._client.containers.get(name)
+        return container.labels.get("gr-mcp.coverage-enabled") == "1"
+
+    def get_coverage_dir(self, name: str) -> Path:
+        """Get the host-side coverage directory for a container."""
+        return Path(HOST_COVERAGE_BASE) / name

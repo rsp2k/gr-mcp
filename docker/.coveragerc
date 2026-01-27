@@ -1,0 +1,60 @@
+# Coverage.py configuration for GNU Radio flowgraph execution
+# See: https://coverage.readthedocs.io/en/latest/config.html
+
+[run]
+# Source packages to measure coverage for
+source =
+    gnuradio
+    /flowgraphs
+
+# Include branch coverage for more detailed analysis
+branch = True
+
+# Enable parallel mode for combining coverage from multiple runs
+parallel = True
+
+# Omit test files and virtual environments from coverage
+omit =
+    */tests/*
+    */test_*
+    */qa_*
+    */.venv/*
+    */site-packages/*
+    */dist-packages/pybind11*
+
+# Dynamic context based on function names (useful for debugging)
+dynamic_context = test_function
+
+[paths]
+# Map container paths to host paths for combining coverage
+source =
+    /usr/lib/python3/dist-packages/gnuradio
+    /flowgraphs
+
+[report]
+# Exclude lines from coverage analysis
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+
+# Show missing line numbers in reports
+show_missing = True
+
+# Minimum coverage percentage (optional, for CI)
+# fail_under = 50
+
+[html]
+# HTML report output directory
+directory = /coverage/htmlcov
+
+[xml]
+# Cobertura XML output (for CI integration)
+output = /coverage/coverage.xml
+
+[json]
+# JSON output for programmatic access
+output = /coverage/coverage.json

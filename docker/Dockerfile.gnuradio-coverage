@@ -1,0 +1,39 @@
+# Coverage-enabled GNU Radio runtime container
+# Extends gnuradio-runtime with Python code coverage instrumentation
+#
+# Build:
+#   docker build -f docker/Dockerfile.gnuradio-coverage -t gnuradio-coverage:latest docker/
+#
+# Usage:
+#   docker run --rm -v $(pwd)/coverage:/coverage \
+#     -e ENABLE_COVERAGE=1 \
+#     gnuradio-coverage:latest python3 /flowgraphs/my_flowgraph.py
+#
+# The coverage data is written to /coverage/.coverage on container exit.
+# Mount this volume to persist coverage data between runs.
+
+FROM gnuradio-runtime:latest
+
+LABEL org.opencontainers.image.title="GNU Radio Coverage Runtime"
+LABEL org.opencontainers.image.description="GNU Radio runtime with Python code coverage support"
+
+# Install Python coverage.py via apt (pip3 not available in base image)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-coverage \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy coverage configuration
+COPY .coveragerc /etc/coveragerc
+
+# Copy coverage-aware entrypoint
+COPY entrypoint-coverage.sh /entrypoint-coverage.sh
+RUN chmod +x /entrypoint-coverage.sh
+
+# Coverage data directory - mount a volume here to persist
+VOLUME /coverage
+
+# Environment variables for coverage
+ENV COVERAGE_FILE=/coverage/.coverage
+ENV COVERAGE_RCFILE=/etc/coveragerc
+
+ENTRYPOINT ["/entrypoint-coverage.sh"]

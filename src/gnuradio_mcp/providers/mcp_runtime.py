@@ -44,14 +44,24 @@ class McpRuntimeProvider:
 
         # Docker-dependent tools
         if p._has_docker:
+            # Container lifecycle
             self._mcp.tool(p.launch_flowgraph)
             self._mcp.tool(p.list_containers)
             self._mcp.tool(p.stop_flowgraph)
             self._mcp.tool(p.remove_flowgraph)
             self._mcp.tool(p.connect_to_container)
+
+            # Visual feedback
             self._mcp.tool(p.capture_screenshot)
             self._mcp.tool(p.get_container_logs)
-            logger.info("Registered 17 runtime tools (Docker available)")
+
+            # Coverage collection
+            self._mcp.tool(p.collect_coverage)
+            self._mcp.tool(p.generate_coverage_report)
+            self._mcp.tool(p.combine_coverage)
+            self._mcp.tool(p.delete_coverage)
+
+            logger.info("Registered 21 runtime tools (Docker available)")
         else:
             logger.info(
                 "Registered 10 runtime tools (Docker unavailable, "
