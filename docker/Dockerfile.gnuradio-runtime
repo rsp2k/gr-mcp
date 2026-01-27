@@ -1,0 +1,26 @@
+FROM librespace/gnuradio:latest
+
+# Xvfb for headless QT rendering, ImageMagick for screenshots,
+# Mesa for software OpenGL, x11vnc for optional visual debugging
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb \
+    x11vnc \
+    imagemagick \
+    mesa-utils \
+    libgl1-mesa-dri \
+    fonts-dejavu-core \
+    x11-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /flowgraphs
+
+ENV DISPLAY=:99
+ENV XMLRPC_PORT=8080
+
+EXPOSE 8080
+EXPOSE 5900
+
+ENTRYPOINT ["/entrypoint.sh"]

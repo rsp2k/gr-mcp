@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+runtime = [
+    "docker>=7.0",
+]
 dev = [
     "pytest>=9.0",
     "pytest-asyncio>=1.3",

@@ -114,3 +114,44 @@ class ErrorModel(BaseModel):
     @classmethod
     def transform_key(cls, v: KeyedModel) -> str:
         return v.to_key()
+
+
+# ──────────────────────────────────────────────
+# Runtime Models (Phase 1: Docker + XML-RPC)
+# ──────────────────────────────────────────────
+
+
+class ContainerModel(BaseModel):
+    name: str
+    container_id: str
+    status: str
+    flowgraph_path: str
+    xmlrpc_port: int
+    vnc_port: int | None = None
+    device_paths: list[str] = []
+
+
+class VariableModel(BaseModel):
+    name: str
+    value: Any
+
+
+class ConnectionInfoModel(BaseModel):
+    url: str
+    container_name: str | None = None
+    xmlrpc_port: int
+    methods: list[str] = []
+
+
+class ScreenshotModel(BaseModel):
+    container_name: str
+    image_base64: str
+    format: str = "png"
+    width: int | None = None
+    height: int | None = None
+
+
+class RuntimeStatusModel(BaseModel):
+    connected: bool
+    connection: ConnectionInfoModel | None = None
+    containers: list[ContainerModel] = []

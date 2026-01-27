@@ -4,6 +4,7 @@ from fastmcp import FastMCP
 
 from gnuradio_mcp.middlewares.platform import PlatformMiddleware
 from gnuradio_mcp.providers.mcp import McpPlatformProvider
+from gnuradio_mcp.providers.mcp_runtime import McpRuntimeProvider
 
 try:
     from gnuradio import gr
@@ -21,6 +22,7 @@ platform.build_library()
 app: FastMCP = FastMCP("GNU Radio MCP", instructions="Create GNU Radio flowgraphs")
 
 McpPlatformProvider.from_platform_middleware(app, PlatformMiddleware(platform))
+McpRuntimeProvider.create(app)
 
 if __name__ == "__main__":
     app.run()
