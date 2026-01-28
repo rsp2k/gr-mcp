@@ -1,5 +1,6 @@
 """Unit tests for DockerMiddleware with mocked Docker client."""
 
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from gnuradio_mcp.middlewares.docker import (
     DEFAULT_XMLRPC_PORT,
     DockerMiddleware,
 )
+from gnuradio_mcp.middlewares.ports import PortConflictError
 from gnuradio_mcp.models import ContainerModel, ScreenshotModel
 
 
@@ -44,6 +46,14 @@ class TestDockerMiddlewareCreate:
 
 
 class TestLaunch:
+    @pytest.fixture(autouse=True)
+    def _bypass_port_check(self):
+        """Existing launch tests don't care about port availability."""
+        with patch(
+            "gnuradio_mcp.middlewares.docker.is_port_available", return_value=True
+        ):
+            yield
+
     def test_launch_creates_container(self, docker_mw, mock_docker_client, tmp_path):
         fg_file = tmp_path / "test.grc"
         fg_file.write_text("<flowgraph/>")
@@ -250,6 +260,13 @@ class TestGetXmlRpcPort:
 
 
 class TestCoverage:
+    @pytest.fixture(autouse=True)
+    def _bypass_port_check(self):
+        with patch(
+            "gnuradio_mcp.middlewares.docker.is_port_available", return_value=True
+        ):
+            yield
+
     def test_launch_with_coverage_uses_coverage_image(
         self, docker_mw, mock_docker_client, tmp_path
     ):
@@ -386,3 +403,101 @@ class TestCoverage:
         # Should still return True (container will be killed)
         assert result is True
         assert "didn't stop gracefully" in caplog.text
+
+
+# Sample flowgraph with embedded XML-RPC port
+_SAMPLE_FG = """\
+#!/usr/bin/env python3
+from xmlrpc.server import SimpleXMLRPCServer
+class top_block:
+    def __init__(self):
+        self.xmlrpc_server_0 = SimpleXMLRPCServer(('localhost', 8080), allow_none=True)
+"""
+
+
+class TestPortAllocation:
+    def test_launch_auto_allocates_port(self, docker_mw, mock_docker_client, tmp_path):
+        """xmlrpc_port=0 should auto-allocate a free port."""
+        fg_file = tmp_path / "test.py"
+        fg_file.write_text(_SAMPLE_FG)
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        result = docker_mw.launch(
+            flowgraph_path=str(fg_file),
+            name="test-auto",
+            xmlrpc_port=0,
+        )
+        # Auto-allocated port should be > 0 and not the default
+        assert result.xmlrpc_port > 0
+
+    def test_launch_occupied_port_raises(self, docker_mw, mock_docker_client, tmp_path):
+        """Requesting a port that's already in use should raise PortConflictError."""
+        fg_file = tmp_path / "test.py"
+        fg_file.write_text(_SAMPLE_FG)
+
+        # Hold a port open
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", 0))
+            occupied_port = s.getsockname()[1]
+
+            with pytest.raises(PortConflictError, match="already in use"):
+                docker_mw.launch(
+                    flowgraph_path=str(fg_file),
+                    name="test-conflict",
+                    xmlrpc_port=occupied_port,
+                )
+
+    def test_launch_patches_mismatched_port(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
+        """When flowgraph has port 8080 but we request 9999, it should be patched."""
+        fg_file = tmp_path / "flowgraph.py"
+        fg_file.write_text(_SAMPLE_FG)
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        # Use a port we know is free (mock is_port_available for determinism)
+        with patch(
+            "gnuradio_mcp.middlewares.docker.is_port_available", return_value=True
+        ):
+            result = docker_mw.launch(
+                flowgraph_path=str(fg_file),
+                name="test-patch",
+                xmlrpc_port=9999,
+            )
+
+        assert result.xmlrpc_port == 9999
+
+        # Original file should be unchanged
+        assert "8080" in fg_file.read_text()
+
+    def test_launch_no_patch_when_ports_match(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
+        """When flowgraph port matches requested port, no patching should occur."""
+        fg_file = tmp_path / "flowgraph.py"
+        fg_file.write_text(_SAMPLE_FG)
+
+        mock_container = MagicMock()
+        mock_container.id = "abc123def456"
+        mock_docker_client.containers.run.return_value = mock_container
+
+        with patch(
+            "gnuradio_mcp.middlewares.docker.is_port_available", return_value=True
+        ):
+            result = docker_mw.launch(
+                flowgraph_path=str(fg_file),
+                name="test-match",
+                xmlrpc_port=8080,
+            )
+
+        assert result.xmlrpc_port == 8080
+        # No patched files should exist (only the original)
+        py_files = list(tmp_path.glob("*.py"))
+        assert len(py_files) == 1

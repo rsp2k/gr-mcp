@@ -5,6 +5,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from gnuradio_mcp.middlewares.ports import (
+    PortConflictError,
+    detect_xmlrpc_port,
+    find_free_port,
+    is_port_available,
+    patch_xmlrpc_port,
+)
 from gnuradio_mcp.models import ContainerModel, ScreenshotModel
 
 logger = logging.getLogger(__name__)
@@ -72,6 +79,24 @@ class DockerMiddleware:
         if not fg_path.exists():
             raise FileNotFoundError(f"Flowgraph not found: {fg_path}")
 
+        # --- Port resolution ---
+        xmlrpc_port = self._resolve_port(xmlrpc_port, "XML-RPC")
+        if enable_controlport:
+            controlport_port = self._resolve_port(controlport_port, "ControlPort")
+        vnc_port_resolved: int | None = None
+        if enable_vnc:
+            vnc_port_resolved = self._resolve_port(DEFAULT_VNC_PORT, "VNC")
+
+        # --- Flowgraph port patching ---
+        embedded_port = detect_xmlrpc_port(fg_path)
+        if embedded_port is not None and embedded_port != xmlrpc_port:
+            fg_path = patch_xmlrpc_port(fg_path, xmlrpc_port)
+            logger.info(
+                "Patched flowgraph XML-RPC port: %d -> %d",
+                embedded_port,
+                xmlrpc_port,
+            )
+
         # Select image based on coverage mode
         image = COVERAGE_IMAGE if enable_coverage else RUNTIME_IMAGE
 
@@ -86,10 +111,8 @@ class DockerMiddleware:
             env["ENABLE_PERF_COUNTERS"] = "True" if enable_perf_counters else "False"
 
         ports: dict[str, int] = {f"{xmlrpc_port}/tcp": xmlrpc_port}
-        vnc_port: int | None = None
-        if enable_vnc:
-            vnc_port = DEFAULT_VNC_PORT
-            ports[f"{vnc_port}/tcp"] = vnc_port
+        if enable_vnc and vnc_port_resolved is not None:
+            ports[f"{vnc_port_resolved}/tcp"] = vnc_port_resolved
         if enable_controlport:
             ports[f"{controlport_port}/tcp"] = controlport_port
 
@@ -139,12 +162,26 @@ class DockerMiddleware:
             status="running",
             flowgraph_path=str(fg_path),
             xmlrpc_port=xmlrpc_port,
-            vnc_port=vnc_port,
+            vnc_port=vnc_port_resolved,
             controlport_port=controlport_port if enable_controlport else None,
             device_paths=device_paths or [],
             coverage_enabled=enable_coverage,
             controlport_enabled=enable_controlport,
         )
+
+    @staticmethod
+    def _resolve_port(port: int, label: str) -> int:
+        """Resolve a port value: 0 means auto-allocate, otherwise check availability."""
+        if port == 0:
+            allocated = find_free_port()
+            logger.info("Auto-allocated %s port: %d", label, allocated)
+            return allocated
+        if not is_port_available(port):
+            raise PortConflictError(
+                f"{label} port {port} is already in use. "
+                f"Use port=0 for auto-allocation."
+            )
+        return port
 
     def list_containers(self) -> list[ContainerModel]:
         """List all gr-mcp managed containers."""
