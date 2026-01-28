@@ -42,6 +42,15 @@ class McpRuntimeProvider:
         self._mcp.tool(p.lock)
         self._mcp.tool(p.unlock)
 
+        # ControlPort/Thrift tools (always available - Phase 2)
+        self._mcp.tool(p.connect_controlport)
+        self._mcp.tool(p.disconnect_controlport)
+        self._mcp.tool(p.get_knobs)
+        self._mcp.tool(p.set_knobs)
+        self._mcp.tool(p.get_knob_properties)
+        self._mcp.tool(p.get_performance_counters)
+        self._mcp.tool(p.post_message)
+
         # Docker-dependent tools
         if p._has_docker:
             # Container lifecycle
@@ -50,6 +59,7 @@ class McpRuntimeProvider:
             self._mcp.tool(p.stop_flowgraph)
             self._mcp.tool(p.remove_flowgraph)
             self._mcp.tool(p.connect_to_container)
+            self._mcp.tool(p.connect_to_container_controlport)  # Phase 2
 
             # Visual feedback
             self._mcp.tool(p.capture_screenshot)
@@ -61,10 +71,10 @@ class McpRuntimeProvider:
             self._mcp.tool(p.combine_coverage)
             self._mcp.tool(p.delete_coverage)
 
-            logger.info("Registered 21 runtime tools (Docker available)")
+            logger.info("Registered 29 runtime tools (Docker available)")
         else:
             logger.info(
-                "Registered 10 runtime tools (Docker unavailable, "
+                "Registered 17 runtime tools (Docker unavailable, "
                 "container tools skipped)"
             )
 

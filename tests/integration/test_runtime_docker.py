@@ -38,7 +38,7 @@ pytestmark = [
     pytest.mark.skipif(
         not RUNTIME_IMAGE_EXISTS,
         reason=f"Runtime image '{RUNTIME_IMAGE}' not built. "
-        "Run: docker build -t gnuradio-runtime -f docker/Dockerfile.gnuradio-runtime docker/",
+        "Run: docker build -t gnuradio-runtime docker/",
     ),
 ]
 
@@ -174,9 +174,7 @@ class TestDockerMiddlewareIntegration:
 class TestRuntimeProviderIntegration:
     """Test RuntimeProvider with real Docker (requires runtime image)."""
 
-    def test_launch_and_stop_flowgraph(
-        self, test_flowgraph, cleanup_containers
-    ):
+    def test_launch_and_stop_flowgraph(self, test_flowgraph, cleanup_containers):
         from gnuradio_mcp.middlewares.docker import DockerMiddleware
         from gnuradio_mcp.providers.runtime import RuntimeProvider
 
@@ -215,7 +213,7 @@ class TestRuntimeProviderIntegration:
         cleanup_containers.remove(container_name)
 
     def test_launch_connect_and_control(self, test_flowgraph, cleanup_containers):
-        """Full integration: launch container, connect via XML-RPC, control variables."""
+        """Integration: launch, connect via XML-RPC, and control variables."""
         from gnuradio_mcp.middlewares.docker import DockerMiddleware
         from gnuradio_mcp.providers.runtime import RuntimeProvider
 

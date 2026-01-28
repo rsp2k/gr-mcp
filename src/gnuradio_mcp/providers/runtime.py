@@ -7,15 +7,20 @@ import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
-from gnuradio_mcp.middlewares.docker import DockerMiddleware, HOST_COVERAGE_BASE
+from gnuradio_mcp.middlewares.docker import HOST_COVERAGE_BASE, DockerMiddleware
+from gnuradio_mcp.middlewares.thrift import ThriftMiddleware
 from gnuradio_mcp.middlewares.xmlrpc import XmlRpcMiddleware
 from gnuradio_mcp.models import (
     ConnectionInfoModel,
     ContainerModel,
     CoverageDataModel,
     CoverageReportModel,
+    KnobModel,
+    KnobPropertiesModel,
+    PerfCounterModel,
     RuntimeStatusModel,
     ScreenshotModel,
+    ThriftConnectionInfoModel,
     VariableModel,
 )
 
@@ -25,7 +30,9 @@ logger = logging.getLogger(__name__)
 class RuntimeProvider:
     """Business logic for runtime flowgraph control.
 
-    Coordinates Docker (container lifecycle) and XML-RPC (variable control).
+    Coordinates Docker (container lifecycle), XML-RPC (variable control),
+    and ControlPort/Thrift (advanced control with perf counters).
+
     Tracks the active connection so convenience methods like get_variable()
     work without repeating the URL each call.
     """
@@ -36,6 +43,7 @@ class RuntimeProvider:
     ):
         self._docker = docker_mw
         self._xmlrpc: XmlRpcMiddleware | None = None
+        self._thrift: ThriftMiddleware | None = None
         self._active_container: str | None = None
 
     @property
@@ -58,6 +66,14 @@ class RuntimeProvider:
             )
         return self._xmlrpc
 
+    def _require_thrift(self) -> ThriftMiddleware:
+        if self._thrift is None:
+            raise RuntimeError(
+                "Not connected via ControlPort. Use connect_controlport() or "
+                "connect_to_container_controlport() first."
+            )
+        return self._thrift
+
     # ──────────────────────────────────────────
     # Container Lifecycle
     # ──────────────────────────────────────────
@@ -69,6 +85,9 @@ class RuntimeProvider:
         xmlrpc_port: int = 8080,
         enable_vnc: bool = False,
         enable_coverage: bool = False,
+        enable_controlport: bool = False,
+        controlport_port: int = 9090,
+        enable_perf_counters: bool = True,
         device_paths: list[str] | None = None,
     ) -> ContainerModel:
         """Launch a flowgraph in a Docker container with Xvfb.
@@ -79,6 +98,9 @@ class RuntimeProvider:
             xmlrpc_port: Port for XML-RPC variable control
             enable_vnc: Enable VNC server for visual debugging
             enable_coverage: Enable Python code coverage collection
+            enable_controlport: Enable ControlPort/Thrift for advanced control
+            controlport_port: Port for ControlPort (default 9090)
+            enable_perf_counters: Enable performance counters (requires controlport)
             device_paths: Host device paths to pass through
         """
         docker = self._require_docker()
@@ -90,6 +112,9 @@ class RuntimeProvider:
             xmlrpc_port=xmlrpc_port,
             enable_vnc=enable_vnc,
             enable_coverage=enable_coverage,
+            enable_controlport=enable_controlport,
+            controlport_port=controlport_port,
+            enable_perf_counters=enable_perf_counters,
             device_paths=device_paths,
         )
 
@@ -130,17 +155,156 @@ class RuntimeProvider:
         url = f"http://localhost:{port}"
         self._xmlrpc = XmlRpcMiddleware.connect(url)
         self._active_container = name
-        return self._xmlrpc.get_connection_info(
-            container_name=name, xmlrpc_port=port
-        )
+        return self._xmlrpc.get_connection_info(container_name=name, xmlrpc_port=port)
 
     def disconnect(self) -> bool:
         """Disconnect from the current XML-RPC endpoint."""
         if self._xmlrpc is not None:
             self._xmlrpc.close()
             self._xmlrpc = None
-            self._active_container = None
+        if self._thrift is not None:
+            self._thrift.close()
+            self._thrift = None
+        self._active_container = None
         return True
+
+    # ──────────────────────────────────────────
+    # ControlPort/Thrift Connection (Phase 2)
+    # ──────────────────────────────────────────
+
+    def connect_controlport(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 9090,
+    ) -> ThriftConnectionInfoModel:
+        """Connect to a GNU Radio ControlPort/Thrift endpoint.
+
+        ControlPort provides richer functionality than XML-RPC:
+        - Native type support (complex numbers, vectors)
+        - Performance counters (throughput, timing, buffer utilization)
+        - Knob metadata (units, min/max, descriptions)
+        - PMT message injection
+        - Regex-based knob queries
+
+        Args:
+            host: Hostname or IP address
+            port: ControlPort Thrift port (default 9090)
+        """
+        self._thrift = ThriftMiddleware.connect(host, port)
+        self._active_container = None
+        return self._thrift.get_connection_info()
+
+    def connect_to_container_controlport(self, name: str) -> ThriftConnectionInfoModel:
+        """Connect to a flowgraph's ControlPort by container name.
+
+        Resolves the ControlPort port from container labels automatically.
+
+        Args:
+            name: Container name
+        """
+        docker = self._require_docker()
+        if not docker.is_controlport_enabled(name):
+            raise RuntimeError(
+                f"Container '{name}' was not launched with ControlPort enabled. "
+                f"Use launch_flowgraph(..., enable_controlport=True)"
+            )
+        port = docker.get_controlport_port(name)
+        self._thrift = ThriftMiddleware.connect("127.0.0.1", port)
+        self._active_container = name
+        return self._thrift.get_connection_info(container_name=name)
+
+    def disconnect_controlport(self) -> bool:
+        """Disconnect from the current ControlPort endpoint."""
+        if self._thrift is not None:
+            self._thrift.close()
+            self._thrift = None
+        return True
+
+    # ──────────────────────────────────────────
+    # ControlPort Knob Operations (Phase 2)
+    # ──────────────────────────────────────────
+
+    def get_knobs(self, pattern: str = "") -> list[KnobModel]:
+        """Get ControlPort knobs, optionally filtered by regex pattern.
+
+        Knobs are named using the pattern: block_alias::varname
+        (e.g., "sig_source0::frequency")
+
+        Args:
+            pattern: Regex pattern for filtering knob names.
+                     Empty string returns all knobs.
+
+        Examples:
+            get_knobs("")  # All knobs
+            get_knobs(".*frequency.*")  # All frequency-related knobs
+            get_knobs("sig_source0::.*")  # All knobs for sig_source0
+        """
+        thrift = self._require_thrift()
+        return thrift.get_knobs(pattern)
+
+    def set_knobs(self, knobs: dict[str, Any]) -> bool:
+        """Set multiple ControlPort knobs atomically.
+
+        Args:
+            knobs: Dict mapping knob names to new values.
+                   Types are inferred from existing knobs.
+
+        Example:
+            set_knobs({
+                "sig_source0::frequency": 1000000.0,
+                "sig_source0::amplitude": 0.5,
+            })
+        """
+        thrift = self._require_thrift()
+        return thrift.set_knobs(knobs)
+
+    def get_knob_properties(self, names: list[str]) -> list[KnobPropertiesModel]:
+        """Get metadata (units, min/max, description) for specified knobs.
+
+        Args:
+            names: List of knob names to query. Empty list returns all properties.
+
+        Returns:
+            List of KnobPropertiesModel with rich metadata.
+        """
+        thrift = self._require_thrift()
+        return thrift.get_knob_properties(names)
+
+    def get_performance_counters(
+        self, block: str | None = None
+    ) -> list[PerfCounterModel]:
+        """Get performance metrics for blocks via ControlPort.
+
+        Requires the flowgraph to be launched with enable_controlport=True
+        and enable_perf_counters=True (default).
+
+        Args:
+            block: Optional block alias to filter (e.g., "sig_source0").
+                   If None, returns metrics for all blocks.
+
+        Returns:
+            List of PerfCounterModel with throughput, timing, and buffer stats.
+        """
+        thrift = self._require_thrift()
+        return thrift.get_performance_counters(block)
+
+    def post_message(self, block: str, port: str, message: Any) -> bool:
+        """Send a PMT message to a block's message port via ControlPort.
+
+        Args:
+            block: Block alias (e.g., "msg_sink0")
+            port: Message port name (e.g., "in")
+            message: Message to send (will be converted to PMT if needed)
+
+        Example:
+            # Send a simple string message
+            post_message("pdu_sink0", "pdus", "hello")
+
+            # Send a dict (converted to PMT dict)
+            post_message("block0", "command", {"freq": 1e6})
+        """
+        thrift = self._require_thrift()
+        return thrift.post_message(block, port, message)
 
     def get_status(self) -> RuntimeStatusModel:
         """Get runtime status including connection and container info."""
@@ -216,7 +380,7 @@ class RuntimeProvider:
         container_name = name or self._active_container
         if container_name is None:
             raise RuntimeError(
-                "No container specified. Provide a name or connect to a container first."
+                "No container specified. Provide a name or connect first."
             )
         return docker.capture_screenshot(container_name)
 
@@ -226,7 +390,7 @@ class RuntimeProvider:
         container_name = name or self._active_container
         if container_name is None:
             raise RuntimeError(
-                "No container specified. Provide a name or connect to a container first."
+                "No container specified. Provide a name or connect first."
             )
         return docker.get_logs(container_name, tail=tail)
 
@@ -350,9 +514,12 @@ class RuntimeProvider:
             report_path = coverage_dir / "htmlcov" / "index.html"
             subprocess.run(
                 [
-                    "coverage", "html",
-                    "--data-file", str(coverage_file),
-                    "-d", str(coverage_dir / "htmlcov"),
+                    "coverage",
+                    "html",
+                    "--data-file",
+                    str(coverage_file),
+                    "-d",
+                    str(coverage_dir / "htmlcov"),
                 ],
                 capture_output=True,
                 check=True,
@@ -361,9 +528,12 @@ class RuntimeProvider:
             report_path = coverage_dir / "coverage.xml"
             subprocess.run(
                 [
-                    "coverage", "xml",
-                    "--data-file", str(coverage_file),
-                    "-o", str(report_path),
+                    "coverage",
+                    "xml",
+                    "--data-file",
+                    str(coverage_file),
+                    "-o",
+                    str(report_path),
                 ],
                 capture_output=True,
                 check=True,
@@ -372,9 +542,12 @@ class RuntimeProvider:
             report_path = coverage_dir / "coverage.json"
             subprocess.run(
                 [
-                    "coverage", "json",
-                    "--data-file", str(coverage_file),
-                    "-o", str(report_path),
+                    "coverage",
+                    "json",
+                    "--data-file",
+                    str(coverage_file),
+                    "-o",
+                    str(report_path),
                 ],
                 capture_output=True,
                 check=True,

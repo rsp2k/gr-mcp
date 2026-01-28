@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_XMLRPC_PORT = 8080
 DEFAULT_VNC_PORT = 5900
+DEFAULT_CONTROLPORT_PORT = 9090  # Phase 2: Thrift ControlPort
 DEFAULT_STOP_TIMEOUT = 30  # Seconds to wait for graceful shutdown (coverage needs time)
 RUNTIME_IMAGE = "gnuradio-runtime:latest"
 COVERAGE_IMAGE = "gnuradio-coverage:latest"
@@ -31,7 +32,7 @@ class DockerMiddleware:
 
     @classmethod
     def create(cls) -> DockerMiddleware | None:
-        """Attempt to create a DockerMiddleware. Returns None if Docker is unavailable."""
+        """Create a DockerMiddleware. Returns None if Docker unavailable."""
         try:
             import docker
 
@@ -49,6 +50,9 @@ class DockerMiddleware:
         xmlrpc_port: int = DEFAULT_XMLRPC_PORT,
         enable_vnc: bool = False,
         enable_coverage: bool = False,
+        enable_controlport: bool = False,
+        controlport_port: int = DEFAULT_CONTROLPORT_PORT,
+        enable_perf_counters: bool = True,
         device_paths: list[str] | None = None,
     ) -> ContainerModel:
         """Launch a flowgraph in a Docker container with Xvfb.
@@ -59,6 +63,9 @@ class DockerMiddleware:
             xmlrpc_port: Port for XML-RPC variable control
             enable_vnc: Enable VNC server for visual debugging
             enable_coverage: Use coverage image and collect Python coverage data
+            enable_controlport: Enable ControlPort/Thrift for advanced control
+            controlport_port: Port for ControlPort (default 9090)
+            enable_perf_counters: Enable performance counters (requires controlport)
             device_paths: Host device paths to pass through (e.g., /dev/ttyUSB0)
         """
         fg_path = Path(flowgraph_path).resolve()
@@ -73,12 +80,18 @@ class DockerMiddleware:
             env["ENABLE_VNC"] = "1"
         if enable_coverage:
             env["ENABLE_COVERAGE"] = "1"
+        if enable_controlport:
+            env["ENABLE_CONTROLPORT"] = "1"
+            env["CONTROLPORT_PORT"] = str(controlport_port)
+            env["ENABLE_PERF_COUNTERS"] = "True" if enable_perf_counters else "False"
 
         ports: dict[str, int] = {f"{xmlrpc_port}/tcp": xmlrpc_port}
         vnc_port: int | None = None
         if enable_vnc:
             vnc_port = DEFAULT_VNC_PORT
             ports[f"{vnc_port}/tcp"] = vnc_port
+        if enable_controlport:
+            ports[f"{controlport_port}/tcp"] = controlport_port
 
         volumes = {
             str(fg_path.parent): {
@@ -115,6 +128,8 @@ class DockerMiddleware:
                 "gr-mcp.xmlrpc-port": str(xmlrpc_port),
                 "gr-mcp.vnc-enabled": "1" if enable_vnc else "0",
                 "gr-mcp.coverage-enabled": "1" if enable_coverage else "0",
+                "gr-mcp.controlport-enabled": "1" if enable_controlport else "0",
+                "gr-mcp.controlport-port": str(controlport_port),
             },
         )
 
@@ -125,8 +140,10 @@ class DockerMiddleware:
             flowgraph_path=str(fg_path),
             xmlrpc_port=xmlrpc_port,
             vnc_port=vnc_port,
+            controlport_port=controlport_port if enable_controlport else None,
             device_paths=device_paths or [],
             coverage_enabled=enable_coverage,
+            controlport_enabled=enable_controlport,
         )
 
     def list_containers(self) -> list[ContainerModel]:
@@ -137,17 +154,33 @@ class DockerMiddleware:
         result = []
         for c in containers:
             labels = c.labels
+            controlport_enabled = labels.get("gr-mcp.controlport-enabled") == "1"
             result.append(
                 ContainerModel(
                     name=c.name,
                     container_id=c.id[:12],
                     status=c.status,
                     flowgraph_path=labels.get("gr-mcp.flowgraph", ""),
-                    xmlrpc_port=int(labels.get("gr-mcp.xmlrpc-port", DEFAULT_XMLRPC_PORT)),
-                    vnc_port=DEFAULT_VNC_PORT
-                    if labels.get("gr-mcp.vnc-enabled") == "1" and c.status == "running"
-                    else None,
+                    xmlrpc_port=int(
+                        labels.get("gr-mcp.xmlrpc-port", DEFAULT_XMLRPC_PORT)
+                    ),
+                    vnc_port=(
+                        DEFAULT_VNC_PORT
+                        if labels.get("gr-mcp.vnc-enabled") == "1"
+                        and c.status == "running"
+                        else None
+                    ),
+                    controlport_port=(
+                        int(
+                            labels.get(
+                                "gr-mcp.controlport-port", DEFAULT_CONTROLPORT_PORT
+                            )
+                        )
+                        if controlport_enabled and c.status == "running"
+                        else None
+                    ),
                     coverage_enabled=labels.get("gr-mcp.coverage-enabled") == "1",
+                    controlport_enabled=controlport_enabled,
                 )
             )
         return result
@@ -171,7 +204,9 @@ class DockerMiddleware:
             logger.warning(
                 "Container %s didn't stop gracefully within %ds, "
                 "coverage data may be lost: %s",
-                name, timeout, e
+                name,
+                timeout,
+                e,
             )
         return True
 
@@ -208,9 +243,7 @@ class DockerMiddleware:
     def get_xmlrpc_port(self, name: str) -> int:
         """Get the XML-RPC port for a container."""
         container = self._client.containers.get(name)
-        return int(
-            container.labels.get("gr-mcp.xmlrpc-port", DEFAULT_XMLRPC_PORT)
-        )
+        return int(container.labels.get("gr-mcp.xmlrpc-port", DEFAULT_XMLRPC_PORT))
 
     def is_coverage_enabled(self, name: str) -> bool:
         """Check if coverage is enabled for a container."""
@@ -220,3 +253,15 @@ class DockerMiddleware:
     def get_coverage_dir(self, name: str) -> Path:
         """Get the host-side coverage directory for a container."""
         return Path(HOST_COVERAGE_BASE) / name
+
+    def is_controlport_enabled(self, name: str) -> bool:
+        """Check if ControlPort is enabled for a container."""
+        container = self._client.containers.get(name)
+        return container.labels.get("gr-mcp.controlport-enabled") == "1"
+
+    def get_controlport_port(self, name: str) -> int:
+        """Get the ControlPort Thrift port for a container."""
+        container = self._client.containers.get(name)
+        return int(
+            container.labels.get("gr-mcp.controlport-port", DEFAULT_CONTROLPORT_PORT)
+        )

@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gnuradio_mcp.middlewares.docker import (
-    CONTAINER_FLOWGRAPH_DIR,
     DEFAULT_XMLRPC_PORT,
     DockerMiddleware,
 )
@@ -96,7 +95,9 @@ class TestLaunch:
         call_kwargs = mock_docker_client.containers.run.call_args
         assert call_kwargs.kwargs["labels"]["gr-mcp.vnc-enabled"] == "1"
 
-    def test_launch_without_vnc_sets_label(self, docker_mw, mock_docker_client, tmp_path):
+    def test_launch_without_vnc_sets_label(
+        self, docker_mw, mock_docker_client, tmp_path
+    ):
         fg_file = tmp_path / "test.grc"
         fg_file.write_text("<flowgraph/>")
 
@@ -131,7 +132,10 @@ class TestLaunch:
         assert result.device_paths == ["/dev/bus/usb/001/002"]
 
         call_kwargs = mock_docker_client.containers.run.call_args
-        assert "/dev/bus/usb/001/002:/dev/bus/usb/001/002:rwm" in call_kwargs.kwargs["devices"]
+        assert (
+            "/dev/bus/usb/001/002:/dev/bus/usb/001/002:rwm"
+            in call_kwargs.kwargs["devices"]
+        )
 
 
 class TestListContainers:

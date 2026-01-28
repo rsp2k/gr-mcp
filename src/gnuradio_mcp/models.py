@@ -19,8 +19,7 @@ class BlockTypeModel(BaseModel):
 
 
 class KeyedModel(Protocol):
-    def to_key(self) -> str:
-        ...
+    def to_key(self) -> str: ...
 
 
 class BlockModel(BaseModel):
@@ -128,8 +127,10 @@ class ContainerModel(BaseModel):
     flowgraph_path: str
     xmlrpc_port: int
     vnc_port: int | None = None
+    controlport_port: int | None = None  # Phase 2: Thrift ControlPort
     device_paths: list[str] = []
     coverage_enabled: bool = False
+    controlport_enabled: bool = False  # Phase 2: Thrift ControlPort
 
 
 class VariableModel(BaseModel):
@@ -156,6 +157,87 @@ class RuntimeStatusModel(BaseModel):
     connected: bool
     connection: ConnectionInfoModel | None = None
     containers: list[ContainerModel] = []
+
+
+# ──────────────────────────────────────────────
+# ControlPort/Thrift Models (Phase 2)
+# ──────────────────────────────────────────────
+
+
+# Knob types from GNU Radio's ControlPort Thrift API
+# Maps to gnuradio.ctrlport.GNURadio.ttypes.BaseTypes
+KNOB_TYPE_NAMES = {
+    0: "BOOL",
+    1: "BYTE",
+    2: "SHORT",
+    3: "INT",
+    4: "LONG",
+    5: "DOUBLE",
+    6: "STRING",
+    7: "COMPLEX",
+    8: "F32VECTOR",
+    9: "F64VECTOR",
+    10: "S64VECTOR",
+    11: "S32VECTOR",
+    12: "S16VECTOR",
+    13: "S8VECTOR",
+    14: "C32VECTOR",
+}
+
+
+class KnobModel(BaseModel):
+    """ControlPort knob with type information.
+
+    Knobs are named using the pattern: block_alias::varname
+    (e.g., "sig_source0::frequency")
+    """
+
+    name: str
+    value: Any
+    knob_type: str  # BOOL, INT, DOUBLE, COMPLEX, F32VECTOR, etc.
+
+
+class KnobPropertiesModel(BaseModel):
+    """Rich metadata for a ControlPort knob.
+
+    Includes units, min/max bounds, and description from the
+    block's property registration.
+    """
+
+    name: str
+    description: str
+    units: str | None = None
+    min_value: Any | None = None
+    max_value: Any | None = None
+    default_value: Any | None = None
+    knob_type: str | None = None
+
+
+class PerfCounterModel(BaseModel):
+    """Block performance metrics from ControlPort.
+
+    These are automatically exposed when [PerfCounters] on = True
+    in the GNU Radio config. Performance counters use the naming
+    pattern: block_alias::metric_name
+    """
+
+    block_name: str
+    avg_throughput: float  # samples/sec (avg nproduced * sample rate)
+    avg_work_time_us: float  # microseconds per work() call
+    total_work_time_us: float  # cumulative time in work()
+    avg_nproduced: float  # average samples produced per work() call
+    input_buffer_pct: list[float] = []  # buffer fullness per input port
+    output_buffer_pct: list[float] = []  # buffer fullness per output port
+
+
+class ThriftConnectionInfoModel(BaseModel):
+    """Connection information for ControlPort/Thrift."""
+
+    host: str
+    port: int
+    container_name: str | None = None
+    protocol: str = "thrift"
+    knob_count: int = 0
 
 
 # ──────────────────────────────────────────────

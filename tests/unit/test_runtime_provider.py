@@ -98,7 +98,9 @@ class TestPreconditions:
         with pytest.raises(RuntimeError, match="Docker is not available"):
             provider_no_docker._require_docker()
 
-    def test_require_docker_returns_middleware(self, provider_with_docker, mock_docker_mw):
+    def test_require_docker_returns_middleware(
+        self, provider_with_docker, mock_docker_mw
+    ):
         result = provider_with_docker._require_docker()
         assert result is mock_docker_mw
 
@@ -126,10 +128,15 @@ class TestContainerLifecycle:
             xmlrpc_port=9090,
             enable_vnc=True,
             enable_coverage=False,
+            enable_controlport=False,
+            controlport_port=9090,
+            enable_perf_counters=True,
             device_paths=None,
         )
 
-    def test_launch_flowgraph_auto_name(self, provider_with_docker, mock_docker_mw, tmp_path):
+    def test_launch_flowgraph_auto_name(
+        self, provider_with_docker, mock_docker_mw, tmp_path
+    ):
         fg = tmp_path / "siggen_xmlrpc.grc"
         fg.write_text("<flowgraph/>")
 
@@ -182,7 +189,9 @@ class TestConnectionManagement:
             provider_with_docker.connect("http://localhost:9090")
             mock_xmlrpc_mw.get_connection_info.assert_called_with(xmlrpc_port=9090)
 
-    def test_connect_to_container(self, provider_with_docker, mock_docker_mw, mock_xmlrpc_mw):
+    def test_connect_to_container(
+        self, provider_with_docker, mock_docker_mw, mock_xmlrpc_mw
+    ):
         with patch(
             "gnuradio_mcp.providers.runtime.XmlRpcMiddleware.connect",
             return_value=mock_xmlrpc_mw,
@@ -216,7 +225,9 @@ class TestConnectionManagement:
         assert result.connection is None
         assert len(result.containers) == 1
 
-    def test_get_status_connected(self, provider_with_docker, mock_docker_mw, mock_xmlrpc_mw):
+    def test_get_status_connected(
+        self, provider_with_docker, mock_docker_mw, mock_xmlrpc_mw
+    ):
         provider_with_docker._xmlrpc = mock_xmlrpc_mw
         provider_with_docker._active_container = "gr-test"
 
@@ -226,7 +237,9 @@ class TestConnectionManagement:
         assert result.connection is not None
         mock_xmlrpc_mw.get_connection_info.assert_called()
 
-    def test_get_status_handles_docker_error(self, provider_with_docker, mock_docker_mw):
+    def test_get_status_handles_docker_error(
+        self, provider_with_docker, mock_docker_mw
+    ):
         mock_docker_mw.list_containers.side_effect = Exception("Docker error")
 
         result = provider_with_docker.get_status()
@@ -298,7 +311,9 @@ class TestVisualFeedback:
         assert isinstance(result, ScreenshotModel)
         mock_docker_mw.capture_screenshot.assert_called_once_with("gr-test")
 
-    def test_capture_screenshot_uses_active_container(self, provider_with_docker, mock_docker_mw):
+    def test_capture_screenshot_uses_active_container(
+        self, provider_with_docker, mock_docker_mw
+    ):
         provider_with_docker._active_container = "gr-active"
 
         provider_with_docker.capture_screenshot()
@@ -315,7 +330,9 @@ class TestVisualFeedback:
         assert "flowgraph started" in result
         mock_docker_mw.get_logs.assert_called_once_with("gr-test", tail=50)
 
-    def test_get_container_logs_uses_active_container(self, provider_with_docker, mock_docker_mw):
+    def test_get_container_logs_uses_active_container(
+        self, provider_with_docker, mock_docker_mw
+    ):
         provider_with_docker._active_container = "gr-active"
 
         provider_with_docker.get_container_logs()
@@ -348,9 +365,10 @@ class TestCoverageCollection:
         with pytest.raises(FileNotFoundError, match="No coverage data"):
             provider_with_docker.collect_coverage("nonexistent-container")
 
-    def test_collect_coverage_success(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_collect_coverage_success(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         from gnuradio_mcp.models import CoverageDataModel
-        from gnuradio_mcp.middlewares.docker import HOST_COVERAGE_BASE
 
         # Create fake coverage directory and file
         monkeypatch.setattr(
@@ -383,7 +401,9 @@ TOTAL            100     20     40     10    75%"""
         assert result.lines_total == 100
         assert result.lines_covered == 80  # 100 - 20 missed
 
-    def test_generate_coverage_report_html(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_generate_coverage_report_html(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         from gnuradio_mcp.models import CoverageReportModel
 
         # Setup
@@ -414,7 +434,9 @@ TOTAL            100     20     40     10    75%"""
         assert result.format == "html"
         assert "htmlcov" in result.report_path
 
-    def test_generate_coverage_report_xml(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_generate_coverage_report_xml(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         from gnuradio_mcp.models import CoverageReportModel
 
         monkeypatch.setattr(
@@ -488,7 +510,9 @@ TOTAL            100     20     40     10    75%"""
         with pytest.raises(ValueError, match="At least one container"):
             provider_with_docker.combine_coverage([])
 
-    def test_delete_coverage_specific(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_delete_coverage_specific(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr(
             "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
         )
@@ -503,7 +527,9 @@ TOTAL            100     20     40     10    75%"""
         assert deleted == 1
         assert not coverage_dir.exists()
 
-    def test_delete_coverage_older_than(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_delete_coverage_older_than(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         import os
         import time
 
@@ -542,7 +568,9 @@ TOTAL            100     20     40     10    75%"""
         assert not (tmp_path / "container-1").exists()
         assert not (tmp_path / "container-2").exists()
 
-    def test_delete_coverage_nonexistent(self, provider_with_docker, tmp_path, monkeypatch):
+    def test_delete_coverage_nonexistent(
+        self, provider_with_docker, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr(
             "gnuradio_mcp.providers.runtime.HOST_COVERAGE_BASE", str(tmp_path)
         )
