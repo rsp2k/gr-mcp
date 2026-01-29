@@ -31,8 +31,16 @@ class XmlRpcMiddleware:
         transport = xmlrpc.client.Transport()
         transport.timeout = XMLRPC_TIMEOUT
         proxy = xmlrpc.client.ServerProxy(url, transport=transport)
-        # Verify connectivity
-        proxy.system.listMethods()
+        # Verify connectivity — GRC's SimpleXMLRPCServer uses
+        # register_instance() which doesn't enable system.listMethods.
+        # A Fault means the server responded (connected); only network
+        # errors like ConnectionRefused indicate no server.
+        try:
+            proxy.system.listMethods()
+        except ConnectionRefusedError:
+            raise  # actual connectivity failure — propagate
+        except Exception as e:
+            logger.debug("Introspection unavailable (normal for GRC servers): %s", e)
         logger.info("Connected to XML-RPC at %s", url)
         return cls(proxy, url)
 

@@ -235,7 +235,9 @@ class ThriftMiddleware:
                     units=prop.units if hasattr(prop, "units") else None,
                     min_value=prop.min.value if prop.min else None,
                     max_value=prop.max.value if prop.max else None,
-                    default_value=prop.defaultvalue.value if prop.defaultvalue else None,
+                    default_value=(
+                        prop.defaultvalue.value if prop.defaultvalue else None
+                    ),
                     knob_type=knob_type,
                 )
             )
@@ -287,9 +289,7 @@ class ThriftMiddleware:
                     avg_work_time_us=metrics.get("avg work time", 0.0),
                     total_work_time_us=metrics.get("total work time", 0.0),
                     avg_nproduced=metrics.get("avg nproduced", 0.0),
-                    input_buffer_pct=self._to_list(
-                        metrics.get("avg input % full", [])
-                    ),
+                    input_buffer_pct=self._to_list(metrics.get("avg input % full", [])),
                     output_buffer_pct=self._to_list(
                         metrics.get("avg output % full", [])
                     ),

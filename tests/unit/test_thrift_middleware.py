@@ -125,7 +125,9 @@ class TestThriftMiddlewareVariables:
         """list_variables excludes performance counter knobs."""
         mock_client.getKnobs.return_value = {
             "sig_source0::frequency": MockKnob("sig_source0::frequency", 1e6, 5),
-            "null_sink0::avg throughput": MockKnob("null_sink0::avg throughput", 1e9, 5),
+            "null_sink0::avg throughput": MockKnob(
+                "null_sink0::avg throughput", 1e9, 5
+            ),
         }
 
         variables = thrift_middleware.list_variables()

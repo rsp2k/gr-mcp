@@ -53,6 +53,21 @@ class TestConnect:
             with pytest.raises(ConnectionRefusedError):
                 XmlRpcMiddleware.connect("http://localhost:8080")
 
+    def test_connect_without_introspection(self):
+        """GRC servers don't enable system.listMethods — connect should still succeed."""
+        from xmlrpc.client import Fault
+
+        with patch("gnuradio_mcp.middlewares.xmlrpc.xmlrpc.client") as mock_xmlrpc:
+            mock_proxy = MagicMock()
+            mock_proxy.system.listMethods.side_effect = Fault(
+                1, "method 'system.listMethods' is not supported"
+            )
+            mock_xmlrpc.ServerProxy.return_value = mock_proxy
+            mock_xmlrpc.Transport.return_value = MagicMock()
+
+            mw = XmlRpcMiddleware.connect("http://localhost:8080")
+            assert mw is not None
+
 
 class TestConnectionInfo:
     def test_get_connection_info(self, xmlrpc_mw, mock_proxy):
