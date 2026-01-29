@@ -1,0 +1,32 @@
+services:
+  fm-receiver:
+    build:
+      context: .
+      dockerfile: Dockerfile.gnuradio-audio
+
+    # Root required for USB device access (RTL-SDR)
+    user: root
+    privileged: true
+
+    volumes:
+      # PulseAudio socket for audio output (ALSA → PulseAudio bridge)
+      - /run/user/${HOST_UID:-1000}/pulse/native:/run/pulse/native
+      # Flowgraph source files
+      - ../examples:/flowgraphs:ro
+      - ../src:/src:ro
+      # Entrypoint script
+      - ./entrypoint-fm.sh:/entrypoint-fm.sh:ro
+
+    environment:
+      - PULSE_SERVER=unix:/run/pulse/native
+      - FREQ_MHZ=${FREQ_MHZ:-101.1}
+      - GAIN=${GAIN:-10}
+
+    # XML-RPC port for tuning control from host
+    ports:
+      - "8090:8090"
+
+    entrypoint: ["/bin/bash", "/entrypoint-fm.sh"]
+
+    stdin_open: true
+    tty: true
