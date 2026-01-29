@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """FM Band Scanner — scan 87.5–108.0 MHz using rtl_power, rank stations by signal strength.
 
-Tuning uses a GNU Radio flowgraph built from the included GRC template,
-compiled with grcc, and controlled at runtime via XML-RPC — the same
-protocol that gr-mcp uses for live parameter control.
+Tuning builds a GNU Radio flowgraph programmatically using the same GRC
+Platform API that gr-mcp uses, compiles it with grcc, and controls it at
+runtime via XML-RPC for live frequency changes.
 """
 
 import argparse
 import csv
 import io
 import json
-import re
 import shutil
 import signal
 import subprocess
@@ -255,40 +254,116 @@ def pick_station(stations: list[dict]) -> float | None:
 
 
 XMLRPC_PORT = 8090
-GRC_TEMPLATE = Path(__file__).parent / "fm_receiver.grc"
 
 
-def prepare_flowgraph(freq_mhz: float, gain: int = 10) -> Path:
-    """Create a tuned FM receiver GRC file from the template.
+def build_fm_receiver(freq_mhz: float, gain: int = 10) -> Path:
+    """Build an FM receiver flowgraph programmatically — no GRC template needed.
 
-    Patches the template with the requested frequency and gain, then
-    compiles it with grcc. Returns the path to the compiled .py file.
+    Creates all blocks, sets parameters, connects the signal chain, saves to
+    .grc, and compiles with grcc. This uses the same middleware that gr-mcp's
+    MCP tools use, proving end-to-end programmatic flowgraph construction.
+
+    Signal chain:
+        RTL-SDR (2.4 MHz) → LPF (decim 5) → WBFM Demod (decim 10) → Audio (48 kHz)
     """
-    grc_text = GRC_TEMPLATE.read_text()
+    # Late import to avoid dependency when just scanning (no --tune)
+    try:
+        from gnuradio import gr
+        from gnuradio.grc.core.platform import Platform
+    except ImportError:
+        print("Error: GNU Radio not found. Install gnuradio.", file=sys.stderr)
+        sys.exit(1)
 
-    # Patch frequency variable (value line under the freq block)
-    grc_text = re.sub(
-        r"(- name: freq\n  id: variable\n  parameters:\n    comment: ''\n    value: )[\d.eE+]+",
-        rf"\g<1>{freq_mhz}e6",
-        grc_text,
+    # Initialize platform (same as gr-mcp main.py)
+    platform = Platform(
+        version=gr.version(),
+        version_parts=(gr.major_version(), gr.api_version(), gr.minor_version()),
+        prefs=gr.prefs(),
     )
-    # Patch osmosdr RF gain (only the top-level gain0, not bb_gain0/if_gain0)
-    grc_text = re.sub(r"((?<![_a-z])gain0: ')(\d+)(')", rf"\g<1>{gain}\3", grc_text)
+    platform.build_library()
 
-    work_dir = Path(tempfile.mkdtemp(prefix="fm_scanner_"))
+    # Create flowgraph
+    fg = platform.make_flow_graph()
+
+    # Configure options block (flowgraph metadata)
+    options = next(b for b in fg.blocks if b.key == "options")
+    options.params["id"].set_value("fm_receiver")
+    options.params["title"].set_value("FM Receiver")
+    options.params["generate_options"].set_value("no_gui")
+    options.params["run_options"].set_value("run")
+
+    # Add samp_rate variable (not included by default, unlike GRC GUI)
+    samp_rate = fg.new_block("variable")
+    samp_rate.params["id"].set_value("samp_rate")
+    samp_rate.params["value"].set_value("int(2.4e6)")
+
+    # Add freq variable
+    freq_block = fg.new_block("variable")
+    freq_block.params["id"].set_value("freq")
+    freq_block.params["value"].set_value(f"{freq_mhz}e6")
+
+    # RTL-SDR source
+    source = fg.new_block("osmosdr_source")
+    source.params["id"].set_value("osmosdr_source_0")
+    source.params["sample_rate"].set_value("samp_rate")
+    source.params["freq0"].set_value("freq")  # Reference the variable
+    source.params["gain0"].set_value(str(gain))
+    source.params["if_gain0"].set_value("20")
+    source.params["bb_gain0"].set_value("20")
+    source.params["args"].set_value('"rtl=0"')
+
+    # Low-pass filter: 2.4 MHz → 480 kHz (decim 5)
+    lpf = fg.new_block("low_pass_filter")
+    lpf.params["id"].set_value("low_pass_filter_0")
+    lpf.params["type"].set_value("fir_filter_ccf")
+    lpf.params["decim"].set_value("5")
+    lpf.params["gain"].set_value("1")
+    lpf.params["samp_rate"].set_value("samp_rate")
+    lpf.params["cutoff_freq"].set_value("100e3")
+    lpf.params["width"].set_value("10e3")
+    lpf.params["win"].set_value("window.WIN_HAMMING")
+    lpf.params["beta"].set_value("6.76")
+
+    # WBFM demodulator: 480 kHz → 48 kHz (decim 10)
+    wfm = fg.new_block("analog_wfm_rcv")
+    wfm.params["id"].set_value("analog_wfm_rcv_0")
+    wfm.params["quad_rate"].set_value("480e3")
+    wfm.params["audio_decimation"].set_value("10")
+
+    # Audio sink
+    audio = fg.new_block("audio_sink")
+    audio.params["id"].set_value("audio_sink_0")
+    audio.params["samp_rate"].set_value("48000")
+    audio.params["ok_to_block"].set_value("True")
+
+    # XML-RPC server for runtime control
+    xmlrpc = fg.new_block("xmlrpc_server")
+    xmlrpc.params["id"].set_value("xmlrpc_server_0")
+    xmlrpc.params["addr"].set_value("0.0.0.0")
+    xmlrpc.params["port"].set_value(str(XMLRPC_PORT))
+
+    # Connect signal chain
+    # source:0 → lpf:0
+    fg.connect(source.sources[0], lpf.sinks[0])
+    # lpf:0 → wfm:0
+    fg.connect(lpf.sources[0], wfm.sinks[0])
+    # wfm:0 → audio:0
+    fg.connect(wfm.sources[0], audio.sinks[0])
+
+    # Save and compile
+    work_dir = Path(tempfile.mkdtemp(prefix="fm_receiver_"))
     grc_path = work_dir / "fm_receiver.grc"
-    grc_path.write_text(grc_text)
+    platform.save_flow_graph(str(grc_path), fg)
 
-    # Compile GRC → Python
     result = subprocess.run(
         ["grcc", "-o", str(work_dir), str(grc_path)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         print(f"Error: grcc compilation failed:\n{result.stderr}", file=sys.stderr)
         sys.exit(1)
 
-    # grcc uses the flowgraph's id as the filename (default.py for id: default)
     py_files = list(work_dir.glob("*.py"))
     if not py_files:
         print("Error: grcc produced no Python output.", file=sys.stderr)
@@ -317,13 +392,13 @@ def wait_for_xmlrpc(url: str, timeout: float = 10.0) -> xmlrpc.client.ServerProx
 def tune_station(freq_mhz: float, gain: int = 10):
     """Launch a GNU Radio FM receiver and tune via XML-RPC.
 
-    Builds a flowgraph from the GRC template, compiles it with grcc,
-    launches the Python flowgraph as a subprocess, and connects to its
-    XML-RPC server for live frequency control — the same mechanism that
-    gr-mcp uses for runtime parameter changes.
+    Builds a flowgraph programmatically using the GRC Platform API (the same
+    approach gr-mcp uses), compiles it with grcc, launches the Python flowgraph
+    as a subprocess, and connects to its XML-RPC server for live frequency
+    control.
     """
     print(f"\n  Building FM receiver for {freq_mhz:.1f} MHz...")
-    py_path = prepare_flowgraph(freq_mhz, gain)
+    py_path = build_fm_receiver(freq_mhz, gain)
 
     url = f"http://localhost:{XMLRPC_PORT}"
     print(f"  Launching flowgraph ({py_path.name})...")
