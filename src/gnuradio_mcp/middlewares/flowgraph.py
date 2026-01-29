@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
 from gnuradio.grc.core.blocks.block import Block
@@ -45,11 +44,18 @@ class FlowGraphMiddleware(ElementMiddleware):
         block_middleware = self.get_block(block_name)
         self._flowgraph.remove_element(block_middleware._block)
 
-    @lru_cache(maxsize=None)
     def get_block(self, block_name: str) -> BlockMiddleware:
-        return BlockMiddleware(
-            next(block for block in self._flowgraph.blocks if block.name == block_name)
+        """Look up a block by name from the live flowgraph.
+
+        Always queries the actual flowgraph state — no caching — so that
+        block renames, removals, and re-creations are immediately visible.
+        """
+        block = next(
+            (b for b in self._flowgraph.blocks if b.name == block_name), None
         )
+        if block is None:
+            raise KeyError(f"Block {block_name!r} not found in flowgraph")
+        return BlockMiddleware(block)
 
     def connect_blocks(
         self, src_port_model: PortModel, dst_port_model: PortModel

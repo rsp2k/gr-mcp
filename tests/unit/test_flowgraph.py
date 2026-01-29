@@ -119,6 +119,48 @@ def test_block_disconnection(flowgraph_middleware: FlowGraphMiddleware, block_ke
     assert len(flowgraph_middleware.get_connections()) == 0
 
 
+def test_get_block_after_removal_raises(flowgraph_middleware: FlowGraphMiddleware):
+    """Removed blocks must not be accessible — prevents stale references."""
+    model = flowgraph_middleware.add_block("analog_sig_source_x")
+    flowgraph_middleware.remove_block(model.name)
+    with pytest.raises(KeyError):
+        flowgraph_middleware.get_block(model.name)
+
+
+def test_recreated_block_gets_fresh_state(flowgraph_middleware: FlowGraphMiddleware):
+    """Re-creating a block after removal must return the new instance."""
+    model = flowgraph_middleware.add_block("analog_sig_source_x")
+    block_mw = flowgraph_middleware.get_block(model.name)
+    block_mw.set_params({"freq": "99999"})
+
+    flowgraph_middleware.remove_block(model.name)
+    model2 = flowgraph_middleware.add_block("analog_sig_source_x", model.name)
+
+    block_mw2 = flowgraph_middleware.get_block(model2.name)
+    freq_param = next(p for p in block_mw2.params if p.key == "freq")
+    # New block should have default value, not the one we set before removal
+    assert freq_param.value != "99999"
+
+
+def test_renamed_block_accessible_by_new_name(
+    flowgraph_middleware: FlowGraphMiddleware,
+):
+    """After renaming via set_params(id=...), the new name must resolve."""
+    model = flowgraph_middleware.add_block("variable")
+    old_name = model.name
+    block_mw = flowgraph_middleware.get_block(old_name)
+    block_mw.set_params({"id": "my_var", "value": "42"})
+
+    # New name works
+    new_block = flowgraph_middleware.get_block("my_var")
+    val = next(p for p in new_block.params if p.key == "value")
+    assert val.value == "42"
+
+    # Old name is gone
+    with pytest.raises(KeyError):
+        flowgraph_middleware.get_block(old_name)
+
+
 def test_default_flowgraph_errors(flowgraph_middleware: FlowGraphMiddleware):
     for error in flowgraph_middleware.get_all_errors():
         assert isinstance(error, ErrorModel)
