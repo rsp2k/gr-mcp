@@ -5,6 +5,7 @@ import argparse
 import csv
 import io
 import json
+import signal
 import shutil
 import subprocess
 import sys
@@ -211,6 +212,85 @@ def save_json(stations: list[dict], noise_floor: float, path: str):
     print(f"Results saved to {path}")
 
 
+def pick_station(stations: list[dict]) -> float | None:
+    """Interactive station picker. Returns frequency in MHz or None to quit."""
+    if not stations:
+        print("No stations to choose from.")
+        return None
+
+    try:
+        choice = input("  Tune to station # (or q to quit): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+    if choice.lower() in ("q", "quit", ""):
+        return None
+
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(stations):
+            return stations[idx]["freq_mhz"]
+        print(f"  Pick 1–{len(stations)}.")
+    except ValueError:
+        # Maybe they typed a frequency directly
+        try:
+            freq = float(choice)
+            if 87.5 <= freq <= 108.0:
+                return freq
+            print("  Frequency must be 87.5–108.0 MHz.")
+        except ValueError:
+            print("  Enter a station number or frequency.")
+
+    return pick_station(stations)
+
+
+def tune_station(freq_mhz: float, gain: int = 10):
+    """Tune to an FM station using rtl_fm piped to aplay.
+
+    rtl_fm demodulates wideband FM, resamples to 48 kHz mono,
+    and pipes raw PCM to ALSA's aplay for real-time audio output.
+    """
+    freq_hz = int(freq_mhz * 1e6)
+    print(f"\n  Tuning to {freq_mhz:.1f} MHz — Ctrl+C to stop\n")
+
+    rtl_cmd = [
+        "rtl_fm",
+        "-f", str(freq_hz),
+        "-M", "wbfm",           # wideband FM demodulation
+        "-s", "200k",           # sample rate (200 kHz captures full FM channel)
+        "-r", "48k",            # resample output to 48 kHz
+        "-g", str(gain),
+        "-",                    # output to stdout
+    ]
+    play_cmd = [
+        "aplay",
+        "-r", "48000",          # 48 kHz sample rate
+        "-f", "S16_LE",         # signed 16-bit little-endian PCM
+        "-t", "raw",            # raw format (no WAV header)
+        "-c", "1",              # mono
+        "-q",                   # quiet (no progress output)
+    ]
+
+    rtl_proc = None
+    play_proc = None
+    try:
+        rtl_proc = subprocess.Popen(rtl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        play_proc = subprocess.Popen(play_cmd, stdin=rtl_proc.stdout, stderr=subprocess.DEVNULL)
+        # Allow rtl_proc to receive SIGPIPE if play_proc exits
+        rtl_proc.stdout.close()
+        play_proc.wait()
+    except KeyboardInterrupt:
+        print("\n  Stopped.")
+    except FileNotFoundError as e:
+        print(f"  Error: {e.filename} not found.", file=sys.stderr)
+    finally:
+        for proc in (play_proc, rtl_proc):
+            if proc and proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                proc.wait(timeout=3)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Scan the US FM band and rank stations by signal strength."
@@ -238,6 +318,13 @@ def main():
         dest="show_all",
         help="Show all channels, not just detected stations",
     )
+    parser.add_argument(
+        "--tune",
+        nargs="?",
+        const="pick",
+        metavar="FREQ",
+        help="Tune to a station after scanning (optionally specify frequency in MHz)",
+    )
     args = parser.parse_args()
 
     print("Scanning FM band (87.5–108.0 MHz)...", flush=True)
@@ -260,6 +347,14 @@ def main():
 
     if args.json:
         save_json(stations, noise_floor, args.json)
+
+    if args.tune is not None:
+        if args.tune == "pick":
+            freq = pick_station(stations)
+        else:
+            freq = float(args.tune)
+        if freq:
+            tune_station(freq, gain=args.gain)
 
 
 if __name__ == "__main__":
