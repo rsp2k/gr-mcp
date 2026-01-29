@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-"""FM Band Scanner — scan 87.5–108.0 MHz using rtl_power, rank stations by signal strength."""
+"""FM Band Scanner — scan 87.5–108.0 MHz using rtl_power, rank stations by signal strength.
+
+Tuning uses a GNU Radio flowgraph built from the included GRC template,
+compiled with grcc, and controlled at runtime via XML-RPC — the same
+protocol that gr-mcp uses for live parameter control.
+"""
 
 import argparse
 import csv
 import io
 import json
-import signal
+import re
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+import time
+import xmlrpc.client
 from collections import defaultdict
 from pathlib import Path
 
@@ -245,50 +254,116 @@ def pick_station(stations: list[dict]) -> float | None:
     return pick_station(stations)
 
 
-def tune_station(freq_mhz: float, gain: int = 10):
-    """Tune to an FM station using rtl_fm piped to aplay.
+XMLRPC_PORT = 8090
+GRC_TEMPLATE = Path(__file__).parent / "fm_receiver.grc"
 
-    rtl_fm demodulates wideband FM, resamples to 48 kHz mono,
-    and pipes raw PCM to ALSA's aplay for real-time audio output.
+
+def prepare_flowgraph(freq_mhz: float, gain: int = 10) -> Path:
+    """Create a tuned FM receiver GRC file from the template.
+
+    Patches the template with the requested frequency and gain, then
+    compiles it with grcc. Returns the path to the compiled .py file.
     """
-    freq_hz = int(freq_mhz * 1e6)
-    print(f"\n  Tuning to {freq_mhz:.1f} MHz — Ctrl+C to stop\n")
+    grc_text = GRC_TEMPLATE.read_text()
 
-    rtl_cmd = [
-        "rtl_fm",
-        "-f", str(freq_hz),
-        "-M", "wbfm",           # wideband FM demodulation
-        "-s", "200k",           # sample rate (200 kHz captures full FM channel)
-        "-r", "48k",            # resample output to 48 kHz
-        "-g", str(gain),
-        "-",                    # output to stdout
-    ]
-    play_cmd = [
-        "aplay",
-        "-r", "48000",          # 48 kHz sample rate
-        "-f", "S16_LE",         # signed 16-bit little-endian PCM
-        "-t", "raw",            # raw format (no WAV header)
-        "-c", "1",              # mono
-        "-q",                   # quiet (no progress output)
-    ]
+    # Patch frequency variable (value line under the freq block)
+    grc_text = re.sub(
+        r"(- name: freq\n  id: variable\n  parameters:\n    comment: ''\n    value: )[\d.eE+]+",
+        rf"\g<1>{freq_mhz}e6",
+        grc_text,
+    )
+    # Patch osmosdr RF gain (only the top-level gain0, not bb_gain0/if_gain0)
+    grc_text = re.sub(r"((?<![_a-z])gain0: ')(\d+)(')", rf"\g<1>{gain}\3", grc_text)
 
-    rtl_proc = None
-    play_proc = None
+    work_dir = Path(tempfile.mkdtemp(prefix="fm_scanner_"))
+    grc_path = work_dir / "fm_receiver.grc"
+    grc_path.write_text(grc_text)
+
+    # Compile GRC → Python
+    result = subprocess.run(
+        ["grcc", "-o", str(work_dir), str(grc_path)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: grcc compilation failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    # grcc uses the flowgraph's id as the filename (default.py for id: default)
+    py_files = list(work_dir.glob("*.py"))
+    if not py_files:
+        print("Error: grcc produced no Python output.", file=sys.stderr)
+        sys.exit(1)
+
+    return py_files[0]
+
+
+def wait_for_xmlrpc(url: str, timeout: float = 10.0) -> xmlrpc.client.ServerProxy:
+    """Wait for the XML-RPC server to become reachable."""
+    proxy = xmlrpc.client.ServerProxy(url)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            proxy.get_freq()
+            return proxy
+        except ConnectionRefusedError:
+            time.sleep(0.3)
+        except Exception:
+            # Fault from missing method is fine — server is up
+            return proxy
+    print("Error: flowgraph XML-RPC server did not start.", file=sys.stderr)
+    sys.exit(1)
+
+
+def tune_station(freq_mhz: float, gain: int = 10):
+    """Launch a GNU Radio FM receiver and tune via XML-RPC.
+
+    Builds a flowgraph from the GRC template, compiles it with grcc,
+    launches the Python flowgraph as a subprocess, and connects to its
+    XML-RPC server for live frequency control — the same mechanism that
+    gr-mcp uses for runtime parameter changes.
+    """
+    print(f"\n  Building FM receiver for {freq_mhz:.1f} MHz...")
+    py_path = prepare_flowgraph(freq_mhz, gain)
+
+    url = f"http://localhost:{XMLRPC_PORT}"
+    print(f"  Launching flowgraph ({py_path.name})...")
+
+    fg_proc = subprocess.Popen(
+        [sys.executable, str(py_path)],
+        stderr=subprocess.DEVNULL,
+    )
+
+    proxy = wait_for_xmlrpc(url)
+    current = proxy.get_freq()
+    print(f"  Receiving {current / 1e6:.1f} MHz — enter frequency to retune, q to quit\n")
+
     try:
-        rtl_proc = subprocess.Popen(rtl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        play_proc = subprocess.Popen(play_cmd, stdin=rtl_proc.stdout, stderr=subprocess.DEVNULL)
-        # Allow rtl_proc to receive SIGPIPE if play_proc exits
-        rtl_proc.stdout.close()
-        play_proc.wait()
+        while fg_proc.poll() is None:
+            try:
+                cmd = input("  freq> ").strip()
+            except EOFError:
+                break
+            if cmd.lower() in ("q", "quit", ""):
+                break
+            try:
+                new_freq = float(cmd)
+                if 87.5 <= new_freq <= 108.0:
+                    proxy.set_freq(new_freq * 1e6)
+                    print(f"  Tuned to {new_freq:.1f} MHz")
+                else:
+                    print("  Frequency must be 87.5–108.0 MHz.")
+            except ValueError:
+                print("  Enter a frequency (MHz) or q to quit.")
     except KeyboardInterrupt:
-        print("\n  Stopped.")
-    except FileNotFoundError as e:
-        print(f"  Error: {e.filename} not found.", file=sys.stderr)
-    finally:
-        for proc in (play_proc, rtl_proc):
-            if proc and proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
-                proc.wait(timeout=3)
+        pass
+
+    print("\n  Stopping flowgraph...")
+    if fg_proc.poll() is None:
+        fg_proc.send_signal(signal.SIGTERM)
+        try:
+            fg_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            fg_proc.kill()
 
 
 def main():
