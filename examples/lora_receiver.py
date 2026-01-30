@@ -141,7 +141,7 @@ class default(gr.top_block, Qt.QWidget):
                 window.WIN_HAMMING,
                 6.76))
         self.lora_rx_0 = lora_sdr.lora_sdr_lora_rx( bw=125000, cr=1, has_crc=True, impl_head=False, pay_len=255, samp_rate=(int(samp_rate/2)), sf=7, sync_word=[0x12], soft_decoding=True, ldro_mode=2, print_rx=[True,True])
-        self.blocks_message_debug_0 = blocks.message_debug(True, gr.log_levels.info)
+        self.blocks_message_debug_0 = blocks.message_debug(True)
         self.xmlrpc_server_0 = SimpleXMLRPCServer(('0.0.0.0', 8080), allow_none=True)
         self.xmlrpc_server_0.register_introspection_functions()
         self.xmlrpc_server_0.register_instance(self)
