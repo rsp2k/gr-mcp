@@ -1,0 +1,32 @@
+FROM librespace/gnuradio:latest
+
+# Build dependencies for gr-lora_sdr (EPFL LoRa SDR OOT module)
+# gr-lora_sdr has no apt/pip package — must compile from source
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git \
+    libvolk2-dev libboost-all-dev pybind11-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Compile gr-lora_sdr (EPFL, chirp spread spectrum decoder)
+# https://github.com/tapparelj/gr-lora_sdr
+# Pinned to master@862746d (2024-01-xx) — no tagged releases exist
+WORKDIR /build
+RUN git clone --depth 1 --branch master \
+        https://github.com/tapparelj/gr-lora_sdr.git && \
+    cd gr-lora_sdr && mkdir build && cd build && \
+    cmake -DCMAKE_INSTALL_PREFIX=/usr .. && \
+    make -j$(nproc) && make install && \
+    ldconfig && \
+    rm -rf /build
+
+WORKDIR /flowgraphs
+
+# cmake installs Python bindings to versioned site-packages (3.11) but
+# the base image's python3 searches unversioned dist-packages — bridge the gap
+ENV PYTHONPATH="/usr/lib/python3.11/site-packages:${PYTHONPATH}"
+
+# XML-RPC port for runtime LoRa parameter control
+ENV XMLRPC_PORT=8091
+EXPOSE 8091
+
+ENTRYPOINT ["python3"]

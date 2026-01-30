@@ -1,0 +1,32 @@
+services:
+  lora-receiver:
+    build:
+      context: .
+      dockerfile: Dockerfile.gnuradio-lora
+
+    # Root required for USB device access (RTL-SDR)
+    user: root
+    privileged: true
+
+    volumes:
+      # Flowgraph source files
+      - ../examples:/flowgraphs:ro
+      - ../src:/src:ro
+      # Entrypoint script
+      - ./entrypoint-lora.sh:/entrypoint-lora.sh:ro
+
+    environment:
+      - FREQ_MHZ=${FREQ_MHZ:-915.0}
+      - SF=${SF:-7}
+      - BW=${BW:-125000}
+      - CR=${CR:-1}
+      - GAIN=${GAIN:-20}
+
+    # XML-RPC port for LoRa parameter control from host
+    ports:
+      - "8091:8091"
+
+    entrypoint: ["/bin/bash", "/entrypoint-lora.sh"]
+
+    stdin_open: true
+    tty: true

@@ -1,0 +1,22 @@
+FROM gnuradio-runtime:latest
+
+# Build gr-lora_sdr (EPFL chirp spread spectrum OOT module)
+# https://github.com/tapparelj/gr-lora_sdr
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git \
+    libvolk2-dev libboost-all-dev pybind11-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone --depth 1 --branch master \
+        https://github.com/tapparelj/gr-lora_sdr.git && \
+    cd gr-lora_sdr && mkdir build && cd build && \
+    cmake -DCMAKE_INSTALL_PREFIX=/usr .. && \
+    make -j$(nproc) && make install && \
+    ldconfig && \
+    rm -rf /build
+
+WORKDIR /flowgraphs
+
+# Bridge Python site-packages path (cmake installs to versioned path)
+ENV PYTHONPATH="/usr/lib/python3.11/site-packages:${PYTHONPATH}"
