@@ -101,3 +101,27 @@ class PlatformProvider:
     def save_flowgraph(self, filepath: str) -> bool:
         self._platform_mw.save_flowgraph(filepath, self._flowgraph_mw)
         return True
+
+    def load_oot_blocks(self, paths: List[str]) -> Dict[str, Any]:
+        """Load OOT (Out-of-Tree) block paths into the platform.
+
+        OOT modules are third-party GNU Radio blocks installed separately.
+        They may be installed to:
+        - /usr/share/gnuradio/grc/blocks (system-wide via package manager)
+        - /usr/local/share/gnuradio/grc/blocks (locally-built)
+        - Custom paths specified by the user
+
+        Since Platform.build_library() does a full reset, this method
+        combines the default block paths with the OOT paths and rebuilds.
+
+        Args:
+            paths: List of directory paths containing .block.yml files
+
+        Returns:
+            dict with:
+                - added_paths: List of valid paths that were added
+                - invalid_paths: List of paths that don't exist
+                - blocks_before: Block count before reload
+                - blocks_after: Block count after reload
+        """
+        return self._platform_mw.load_oot_paths(paths)
