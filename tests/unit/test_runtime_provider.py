@@ -132,6 +132,7 @@ class TestContainerLifecycle:
             controlport_port=9090,
             enable_perf_counters=True,
             device_paths=None,
+            image=None,
         )
 
     def test_launch_flowgraph_auto_name(

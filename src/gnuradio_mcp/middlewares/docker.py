@@ -61,6 +61,7 @@ class DockerMiddleware:
         controlport_port: int = DEFAULT_CONTROLPORT_PORT,
         enable_perf_counters: bool = True,
         device_paths: list[str] | None = None,
+        image: str | None = None,
     ) -> ContainerModel:
         """Launch a flowgraph in a Docker container with Xvfb.
 
@@ -74,6 +75,7 @@ class DockerMiddleware:
             controlport_port: Port for ControlPort (default 9090)
             enable_perf_counters: Enable performance counters (requires controlport)
             device_paths: Host device paths to pass through (e.g., /dev/ttyUSB0)
+            image: Docker image to use (default: gnuradio-runtime or gnuradio-coverage)
         """
         fg_path = Path(flowgraph_path).resolve()
         if not fg_path.exists():
@@ -97,8 +99,9 @@ class DockerMiddleware:
                 xmlrpc_port,
             )
 
-        # Select image based on coverage mode
-        image = COVERAGE_IMAGE if enable_coverage else RUNTIME_IMAGE
+        # Select image: explicit override > coverage > runtime
+        if image is None:
+            image = COVERAGE_IMAGE if enable_coverage else RUNTIME_IMAGE
 
         env = {"DISPLAY": ":99", "XMLRPC_PORT": str(xmlrpc_port)}
         if enable_vnc:

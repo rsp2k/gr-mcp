@@ -262,3 +262,96 @@ class CoverageReportModel(BaseModel):
     container_name: str
     format: Literal["html", "xml", "json"]
     report_path: str
+
+
+# ──────────────────────────────────────────────
+# Platform / Design-Time Models (Phase 3: Gap Fills)
+# ──────────────────────────────────────────────
+
+
+class BlockTypeDetailModel(BaseModel):
+    """Extended block type info with category for search/browsing."""
+
+    label: str
+    key: str
+    category: list[str] = []
+    documentation: str = ""
+    flags: list[str] = []
+    deprecated: bool = False
+
+    @classmethod
+    def from_block_type(cls, block: Type[Block]) -> BlockTypeDetailModel:
+        flags = []
+        if hasattr(block, "flags") and hasattr(block.flags, "data"):
+            flags = sorted(block.flags.data)
+        doc = ""
+        if hasattr(block, "documentation") and isinstance(block.documentation, dict):
+            doc = block.documentation.get("", "")
+        deprecated = False
+        if hasattr(block, "is_deprecated") and callable(block.is_deprecated):
+            try:
+                # is_deprecated() requires an instance; check category fallback
+                deprecated = any(
+                    "deprecated" in c.lower()
+                    for c in (block.category or [])
+                )
+            except Exception:
+                pass
+        return cls(
+            label=block.label,
+            key=block.key,
+            category=list(block.category) if block.category else [],
+            documentation=doc,
+            flags=flags,
+            deprecated=deprecated,
+        )
+
+
+class GeneratedFileModel(BaseModel):
+    """A single generated file."""
+
+    filename: str
+    content: str
+    is_main: bool = False
+
+
+class GeneratedCodeModel(BaseModel):
+    """Generated code from a flowgraph.
+
+    Unlike grcc, code generation does NOT block on validation errors.
+    The ``is_valid`` and ``warnings`` fields report validation state
+    without gating generation.
+    """
+
+    files: list[GeneratedFileModel]
+    generate_options: str
+    flowgraph_id: str
+    output_dir: str = ""
+    is_valid: bool = True
+    warnings: list[ErrorModel] = []
+
+
+class FlowgraphOptionsModel(BaseModel):
+    """Flowgraph-level options from the 'options' block."""
+
+    id: str
+    title: str = ""
+    author: str = ""
+    description: str = ""
+    generate_options: str = ""
+    run_options: str = ""
+    output_language: str = ""
+    catch_exceptions: str = ""
+    all_params: dict[str, Any] = {}
+
+
+class EmbeddedBlockIOModel(BaseModel):
+    """I/O signature extracted from embedded Python block source."""
+
+    name: str
+    cls: str
+    params: list[tuple[str, str]]
+    sinks: list[tuple[str, str, int]]
+    sources: list[tuple[str, str, int]]
+    doc: str = ""
+    callbacks: list[str] = []

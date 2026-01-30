@@ -89,6 +89,7 @@ class RuntimeProvider:
         controlport_port: int = 9090,
         enable_perf_counters: bool = True,
         device_paths: list[str] | None = None,
+        image: str | None = None,
     ) -> ContainerModel:
         """Launch a flowgraph in a Docker container with Xvfb.
 
@@ -102,6 +103,7 @@ class RuntimeProvider:
             controlport_port: Port for ControlPort (default 9090)
             enable_perf_counters: Enable performance counters (requires controlport)
             device_paths: Host device paths to pass through
+            image: Docker image to use (e.g., 'gnuradio-lora-runtime:latest')
         """
         docker = self._require_docker()
         if name is None:
@@ -116,6 +118,7 @@ class RuntimeProvider:
             controlport_port=controlport_port,
             enable_perf_counters=enable_perf_counters,
             device_paths=device_paths,
+            image=image,
         )
 
     def list_containers(self) -> list[ContainerModel]:

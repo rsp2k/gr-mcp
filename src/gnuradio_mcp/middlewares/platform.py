@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from gnuradio.grc.core.platform import Platform
 
 from gnuradio_mcp.middlewares.base import ElementMiddleware
 from gnuradio_mcp.middlewares.flowgraph import FlowGraphMiddleware
-from gnuradio_mcp.models import BlockTypeModel
+from gnuradio_mcp.models import BlockTypeDetailModel, BlockTypeModel
 
 
 class PlatformMiddleware(ElementMiddleware):
@@ -92,3 +93,72 @@ class PlatformMiddleware(ElementMiddleware):
 
     def save_flowgraph(self, filepath: str, flowgraph: FlowGraphMiddleware) -> None:
         self._platform.save_flow_graph(filepath, flowgraph._flowgraph)
+
+    # ──────────────────────────────────────────
+    # Gap 2: Load Existing Flowgraph
+    # ──────────────────────────────────────────
+
+    def load_flowgraph(self, filepath: str) -> FlowGraphMiddleware:
+        """Load an existing .grc file, replacing the current flowgraph."""
+        return FlowGraphMiddleware.from_file(self, filepath)
+
+    # ──────────────────────────────────────────
+    # Gap 5: Search/Browse Blocks by Category
+    # ──────────────────────────────────────────
+
+    def search_blocks(
+        self,
+        query: str = "",
+        category: Optional[str] = None,
+    ) -> list[BlockTypeDetailModel]:
+        """Search available blocks by keyword and/or category.
+
+        Args:
+            query: Substring match against key, label, or documentation.
+            category: Filter to blocks in this category (case-insensitive).
+                      Matches if any element in the block's category path
+                      contains the string.
+        """
+        results = []
+        query_lower = query.lower()
+        category_lower = category.lower() if category else None
+
+        for block_type in self._platform.blocks.values():
+            # Category filter
+            if category_lower:
+                block_cats = [c.lower() for c in (block_type.category or [])]
+                if not any(category_lower in c for c in block_cats):
+                    continue
+
+            # Query filter (empty query matches everything)
+            if query_lower:
+                searchable = (
+                    block_type.key.lower()
+                    + " "
+                    + block_type.label.lower()
+                )
+                if hasattr(block_type, "documentation"):
+                    doc = block_type.documentation
+                    if isinstance(doc, dict):
+                        searchable += " " + doc.get("", "").lower()
+                    elif isinstance(doc, str):
+                        searchable += " " + doc.lower()
+
+                if query_lower not in searchable:
+                    continue
+
+            results.append(BlockTypeDetailModel.from_block_type(block_type))
+
+        return results
+
+    def get_block_categories(self) -> dict[str, list[str]]:
+        """Get the full category tree with block keys per category.
+
+        Returns a dict mapping category path (joined with '/') to
+        list of block keys in that category.
+        """
+        categories: dict[str, list[str]] = {}
+        for block_type in self._platform.blocks.values():
+            cat_path = "/".join(block_type.category) if block_type.category else "(uncategorized)"
+            categories.setdefault(cat_path, []).append(block_type.key)
+        return dict(sorted(categories.items()))

@@ -1,13 +1,16 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from gnuradio_mcp.middlewares.platform import PlatformMiddleware
 from gnuradio_mcp.models import (
     SINK,
     SOURCE,
     BlockModel,
+    BlockTypeDetailModel,
     BlockTypeModel,
     ConnectionModel,
     ErrorModel,
+    FlowgraphOptionsModel,
+    GeneratedCodeModel,
     ParamModel,
     PortModel,
 )
@@ -125,3 +128,101 @@ class PlatformProvider:
                 - blocks_after: Block count after reload
         """
         return self._platform_mw.load_oot_paths(paths)
+
+    ##############################################
+    # Gap 1: Code Generation
+    ##############################################
+
+    def generate_code(self, output_dir: str = "") -> GeneratedCodeModel:
+        """Generate Python/C++ code from the current flowgraph.
+
+        Unlike grcc, this does NOT block on validation errors.
+        Validation warnings are included in the response for reference.
+        """
+        return self._flowgraph_mw.generate_code(output_dir)
+
+    ##############################################
+    # Gap 2: Load Existing Flowgraph
+    ##############################################
+
+    def load_flowgraph(self, filepath: str) -> list[BlockModel]:
+        """Load a .grc file, replacing the current flowgraph.
+
+        Returns the blocks in the newly loaded flowgraph.
+        """
+        self._flowgraph_mw = self._platform_mw.load_flowgraph(filepath)
+        return self._flowgraph_mw.blocks
+
+    ##############################################
+    # Gap 3: Flowgraph Options
+    ##############################################
+
+    def get_flowgraph_options(self) -> FlowgraphOptionsModel:
+        """Get the flowgraph-level options (title, author, generate_options, etc.)."""
+        return self._flowgraph_mw.get_flowgraph_options()
+
+    def set_flowgraph_options(self, params: Dict[str, Any]) -> bool:
+        """Set flowgraph-level options on the 'options' block."""
+        return self._flowgraph_mw.set_flowgraph_options(params)
+
+    ##############################################
+    # Gap 4: Embedded Python Blocks
+    ##############################################
+
+    def create_embedded_python_block(
+        self, source_code: str, block_name: Optional[str] = None
+    ) -> str:
+        """Create an embedded Python block from source code.
+
+        Returns the block name.
+        """
+        block_model = self._flowgraph_mw.create_embedded_python_block(
+            source_code, block_name
+        )
+        return block_model.name
+
+    ##############################################
+    # Gap 5: Search Blocks
+    ##############################################
+
+    def search_blocks(
+        self, query: str = "", category: Optional[str] = None
+    ) -> list[BlockTypeDetailModel]:
+        """Search available blocks by keyword and/or category."""
+        return self._platform_mw.search_blocks(query, category)
+
+    def get_block_categories(self) -> dict[str, list[str]]:
+        """Get all block categories with their block keys."""
+        return self._platform_mw.get_block_categories()
+
+    ##############################################
+    # Gap 6: Expression Evaluation
+    ##############################################
+
+    def evaluate_expression(self, expr: str) -> Any:
+        """Evaluate a Python expression in the flowgraph's namespace."""
+        return self._flowgraph_mw.evaluate_expression(expr)
+
+    ##############################################
+    # Gap 7: Block Bypass
+    ##############################################
+
+    def bypass_block(self, block_name: str) -> bool:
+        """Bypass a block (pass signal through without processing)."""
+        return self._flowgraph_mw.bypass_block(block_name)
+
+    def unbypass_block(self, block_name: str) -> bool:
+        """Re-enable a bypassed block."""
+        return self._flowgraph_mw.unbypass_block(block_name)
+
+    ##############################################
+    # Gap 8: Export/Import Flowgraph Data
+    ##############################################
+
+    def export_flowgraph_data(self) -> dict:
+        """Export the flowgraph as a nested dict (same format as .grc files)."""
+        return self._flowgraph_mw.export_data()
+
+    def import_flowgraph_data(self, data: dict) -> bool:
+        """Import flowgraph data from a dict, replacing current contents."""
+        return self._flowgraph_mw.import_data(data)

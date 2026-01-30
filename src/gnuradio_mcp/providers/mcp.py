@@ -11,22 +11,56 @@ class McpPlatformProvider:
         self.__init_tools()
 
     def __init_tools(self):
-        self._mcp_instance.tool(self._platform_provider.get_blocks)
-        self._mcp_instance.tool(self._platform_provider.make_block)
-        self._mcp_instance.tool(self._platform_provider.remove_block)
-        self._mcp_instance.tool(self._platform_provider.get_block_params)
-        self._mcp_instance.tool(self._platform_provider.set_block_params)
-        self._mcp_instance.tool(self._platform_provider.get_block_sources)
-        self._mcp_instance.tool(self._platform_provider.get_block_sinks)
-        self._mcp_instance.tool(self._platform_provider.get_connections)
-        self._mcp_instance.tool(self._platform_provider.connect_blocks)
-        self._mcp_instance.tool(self._platform_provider.disconnect_blocks)
-        self._mcp_instance.tool(self._platform_provider.validate_block)
-        self._mcp_instance.tool(self._platform_provider.validate_flowgraph)
-        self._mcp_instance.tool(self._platform_provider.get_all_errors)
-        self._mcp_instance.tool(self._platform_provider.save_flowgraph)
-        self._mcp_instance.tool(self._platform_provider.get_all_available_blocks)
-        self._mcp_instance.tool(self._platform_provider.load_oot_blocks)
+        t = self._mcp_instance.tool
+        p = self._platform_provider
+
+        # ── Existing tools ─────────────────────
+        t(p.get_blocks)
+        t(p.make_block)
+        t(p.remove_block)
+        t(p.get_block_params)
+        t(p.set_block_params)
+        t(p.get_block_sources)
+        t(p.get_block_sinks)
+        t(p.get_connections)
+        t(p.connect_blocks)
+        t(p.disconnect_blocks)
+        t(p.validate_block)
+        t(p.validate_flowgraph)
+        t(p.get_all_errors)
+        t(p.save_flowgraph)
+        t(p.get_all_available_blocks)
+
+        # ── OOT Block Loading ──────────────────
+        t(p.load_oot_blocks)
+
+        # ── Gap 1: Code Generation ─────────────
+        t(p.generate_code)
+
+        # ── Gap 2: Load Flowgraph ──────────────
+        t(p.load_flowgraph)
+
+        # ── Gap 3: Flowgraph Options ───────────
+        t(p.get_flowgraph_options)
+        t(p.set_flowgraph_options)
+
+        # ── Gap 4: Embedded Python Blocks ──────
+        t(p.create_embedded_python_block)
+
+        # ── Gap 5: Search / Categories ─────────
+        t(p.search_blocks)
+        t(p.get_block_categories)
+
+        # ── Gap 6: Expression Evaluation ───────
+        t(p.evaluate_expression)
+
+        # ── Gap 7: Block Bypass ────────────────
+        t(p.bypass_block)
+        t(p.unbypass_block)
+
+        # ── Gap 8: Export/Import Data ──────────
+        t(p.export_flowgraph_data)
+        t(p.import_flowgraph_data)
 
     @property
     def app(self) -> FastMCP:
