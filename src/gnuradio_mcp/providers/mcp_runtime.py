@@ -5,6 +5,7 @@ import logging
 from fastmcp import FastMCP
 
 from gnuradio_mcp.middlewares.docker import DockerMiddleware
+from gnuradio_mcp.middlewares.oot import OOTInstallerMiddleware
 from gnuradio_mcp.providers.runtime import RuntimeProvider
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,14 @@ class McpRuntimeProvider:
             self._mcp.tool(p.combine_coverage)
             self._mcp.tool(p.delete_coverage)
 
-            logger.info("Registered 29 runtime tools (Docker available)")
+            # OOT module installation
+            if p._has_oot:
+                self._mcp.tool(p.install_oot_module)
+                self._mcp.tool(p.list_oot_images)
+                self._mcp.tool(p.remove_oot_image)
+                logger.info("Registered 32 runtime tools (Docker + OOT available)")
+            else:
+                logger.info("Registered 29 runtime tools (Docker available)")
         else:
             logger.info(
                 "Registered 17 runtime tools (Docker unavailable, "
@@ -82,5 +90,8 @@ class McpRuntimeProvider:
     def create(cls, mcp_instance: FastMCP) -> McpRuntimeProvider:
         """Factory: create RuntimeProvider with optional Docker support."""
         docker_mw = DockerMiddleware.create()
-        provider = RuntimeProvider(docker_mw=docker_mw)
+        oot_mw = None
+        if docker_mw is not None:
+            oot_mw = OOTInstallerMiddleware(docker_mw._client)
+        provider = RuntimeProvider(docker_mw=docker_mw, oot_mw=oot_mw)
         return cls(mcp_instance, provider)

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from gnuradio_mcp.middlewares.docker import HOST_COVERAGE_BASE, DockerMiddleware
+from gnuradio_mcp.middlewares.oot import OOTInstallerMiddleware
 from gnuradio_mcp.middlewares.thrift import ThriftMiddleware
 from gnuradio_mcp.middlewares.xmlrpc import XmlRpcMiddleware
 from gnuradio_mcp.models import (
@@ -17,6 +18,8 @@ from gnuradio_mcp.models import (
     CoverageReportModel,
     KnobModel,
     KnobPropertiesModel,
+    OOTImageInfo,
+    OOTInstallResult,
     PerfCounterModel,
     RuntimeStatusModel,
     ScreenshotModel,
@@ -40,8 +43,10 @@ class RuntimeProvider:
     def __init__(
         self,
         docker_mw: DockerMiddleware | None = None,
+        oot_mw: OOTInstallerMiddleware | None = None,
     ):
         self._docker = docker_mw
+        self._oot = oot_mw
         self._xmlrpc: XmlRpcMiddleware | None = None
         self._thrift: ThriftMiddleware | None = None
         self._active_container: str | None = None
@@ -49,6 +54,10 @@ class RuntimeProvider:
     @property
     def _has_docker(self) -> bool:
         return self._docker is not None
+
+    @property
+    def _has_oot(self) -> bool:
+        return self._oot is not None
 
     def _require_docker(self) -> DockerMiddleware:
         if self._docker is None:
@@ -74,6 +83,14 @@ class RuntimeProvider:
             )
         return self._thrift
 
+    def _require_oot(self) -> OOTInstallerMiddleware:
+        if self._oot is None:
+            raise RuntimeError(
+                "OOT installer requires Docker. Install the 'docker' package "
+                "and ensure the Docker daemon is running."
+            )
+        return self._oot
+
     # ──────────────────────────────────────────
     # Container Lifecycle
     # ──────────────────────────────────────────
@@ -82,7 +99,7 @@ class RuntimeProvider:
         self,
         flowgraph_path: str,
         name: str | None = None,
-        xmlrpc_port: int = 8080,
+        xmlrpc_port: int = 0,
         enable_vnc: bool = False,
         enable_coverage: bool = False,
         enable_controlport: bool = False,
@@ -96,7 +113,7 @@ class RuntimeProvider:
         Args:
             flowgraph_path: Path to the .py flowgraph file
             name: Container name (defaults to 'gr-{stem}')
-            xmlrpc_port: Port for XML-RPC variable control
+            xmlrpc_port: Port for XML-RPC variable control (0 = auto-allocate)
             enable_vnc: Enable VNC server for visual debugging
             enable_coverage: Enable Python code coverage collection
             enable_controlport: Enable ControlPort/Thrift for advanced control
@@ -662,3 +679,42 @@ class RuntimeProvider:
                     deleted += 1
 
         return deleted
+
+    # ──────────────────────────────────────────
+    # OOT Module Installation
+    # ──────────────────────────────────────────
+
+    def install_oot_module(
+        self,
+        git_url: str,
+        branch: str = "main",
+        build_deps: list[str] | None = None,
+        cmake_args: list[str] | None = None,
+        base_image: str | None = None,
+        force: bool = False,
+    ) -> OOTInstallResult:
+        """Install an OOT module into a Docker image.
+
+        Clones the git repo, compiles with cmake, and creates a reusable
+        Docker image. Use the returned image_tag with launch_flowgraph().
+
+        Args:
+            git_url: Git repository URL (e.g., "https://github.com/tapparelj/gr-lora_sdr")
+            branch: Git branch to build from
+            build_deps: Extra apt packages needed for compilation
+            cmake_args: Extra cmake flags (e.g., ["-DENABLE_TESTING=OFF"])
+            base_image: Base image (default: gnuradio-runtime:latest)
+            force: Rebuild even if image exists
+        """
+        oot = self._require_oot()
+        return oot.build_module(git_url, branch, build_deps, cmake_args, base_image, force)
+
+    def list_oot_images(self) -> list[OOTImageInfo]:
+        """List all installed OOT module images."""
+        oot = self._require_oot()
+        return oot.list_images()
+
+    def remove_oot_image(self, module_name: str) -> bool:
+        """Remove an OOT module image and its registry entry."""
+        oot = self._require_oot()
+        return oot.remove_image(module_name)

@@ -363,3 +363,31 @@ class BlockPathsModel(BaseModel):
     paths: list[str]
     block_count: int
     blocks_added: int = 0
+
+
+# ──────────────────────────────────────────────
+# OOT Module Installer Models
+# ──────────────────────────────────────────────
+
+
+class OOTImageInfo(BaseModel):
+    """Metadata for a built OOT module image."""
+
+    module_name: str
+    image_tag: str
+    git_url: str
+    branch: str
+    git_commit: str
+    base_image: str
+    block_count: int = 0
+    built_at: str  # ISO-8601
+
+
+class OOTInstallResult(BaseModel):
+    """Result of OOT module installation."""
+
+    success: bool
+    image: OOTImageInfo | None = None
+    build_log_tail: str = ""  # Last ~30 lines of build output
+    error: str | None = None
+    skipped: bool = False  # True if image already existed
