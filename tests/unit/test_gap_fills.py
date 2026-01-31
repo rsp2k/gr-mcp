@@ -11,6 +11,7 @@ from gnuradio_mcp.middlewares.flowgraph import FlowGraphMiddleware
 from gnuradio_mcp.middlewares.platform import PlatformMiddleware
 from gnuradio_mcp.models import (
     BlockModel,
+    BlockPathsModel,
     BlockTypeDetailModel,
     FlowgraphOptionsModel,
     GeneratedCodeModel,
@@ -263,3 +264,37 @@ def test_generate_code_default_output_persists(
     main = next((f for f in result.files if f.is_main), None)
     if main:
         assert os.path.exists(os.path.join(result.output_dir, main.filename))
+
+
+# ──────────────────────────────────────────────
+# OOT Block Path Management
+# ──────────────────────────────────────────────
+
+
+def test_get_block_paths(platform_middleware: PlatformMiddleware):
+    result = platform_middleware.get_block_paths()
+    assert isinstance(result, BlockPathsModel)
+    assert isinstance(result.paths, list)
+    assert result.block_count > 0
+
+
+def test_add_block_path_nonexistent_raises(platform_middleware: PlatformMiddleware):
+    with pytest.raises(FileNotFoundError):
+        platform_middleware.add_block_path("/nonexistent/path")
+
+
+def test_add_block_path_idempotent(platform_middleware: PlatformMiddleware, tmp_path):
+    result = platform_middleware.add_block_path(str(tmp_path))
+    assert str(tmp_path) in result.paths
+    result2 = platform_middleware.add_block_path(str(tmp_path))
+    assert result2.paths.count(str(tmp_path)) == 1
+
+
+def test_add_block_path_returns_block_count(
+    platform_middleware: PlatformMiddleware, tmp_path
+):
+    result = platform_middleware.add_block_path(str(tmp_path))
+    assert isinstance(result, BlockPathsModel)
+    assert result.block_count > 0
+    # Empty dir won't add new blocks, but count stays the same
+    assert result.blocks_added >= 0

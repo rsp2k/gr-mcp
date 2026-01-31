@@ -33,6 +33,8 @@ class McpPlatformProvider:
 
         # ── OOT Block Loading ──────────────────
         t(p.load_oot_blocks)
+        t(p.add_block_path)
+        t(p.get_block_paths)
 
         # ── Gap 1: Code Generation ─────────────
         t(p.generate_code)

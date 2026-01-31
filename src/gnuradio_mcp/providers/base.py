@@ -5,6 +5,7 @@ from gnuradio_mcp.models import (
     SINK,
     SOURCE,
     BlockModel,
+    BlockPathsModel,
     BlockTypeDetailModel,
     BlockTypeModel,
     ConnectionModel,
@@ -128,6 +129,18 @@ class PlatformProvider:
                 - blocks_after: Block count after reload
         """
         return self._platform_mw.load_oot_paths(paths)
+
+    def add_block_path(self, path: str) -> BlockPathsModel:
+        """Add a directory containing OOT module block YAML files.
+
+        Rebuilds the block library to include blocks from the new path.
+        Use this to load OOT modules like gr-lora_sdr, gr-osmosdr, etc.
+        """
+        return self._platform_mw.add_block_path(path)
+
+    def get_block_paths(self) -> BlockPathsModel:
+        """Show current OOT block paths and total block count."""
+        return self._platform_mw.get_block_paths()
 
     ##############################################
     # Gap 1: Code Generation

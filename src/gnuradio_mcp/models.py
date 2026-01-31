@@ -355,3 +355,11 @@ class EmbeddedBlockIOModel(BaseModel):
     sources: list[tuple[str, str, int]]
     doc: str = ""
     callbacks: list[str] = []
+
+
+class BlockPathsModel(BaseModel):
+    """Result of block path operations."""
+
+    paths: list[str]
+    block_count: int
+    blocks_added: int = 0

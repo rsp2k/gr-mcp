@@ -8,7 +8,7 @@ from gnuradio.grc.core.platform import Platform
 
 from gnuradio_mcp.middlewares.base import ElementMiddleware
 from gnuradio_mcp.middlewares.flowgraph import FlowGraphMiddleware
-from gnuradio_mcp.models import BlockTypeDetailModel, BlockTypeModel
+from gnuradio_mcp.models import BlockPathsModel, BlockTypeDetailModel, BlockTypeModel
 
 
 class PlatformMiddleware(ElementMiddleware):
@@ -87,6 +87,36 @@ class PlatformMiddleware(ElementMiddleware):
             "blocks_before": blocks_before,
             "blocks_after": blocks_after,
         }
+
+    def _rebuild_library(self) -> int:
+        """Rebuild block library with default + OOT paths. Returns block count."""
+        all_paths = self.default_block_paths + self._oot_paths
+        self._platform.build_library(path=all_paths)
+        return len(self._platform.blocks)
+
+    def add_block_path(self, path: str) -> BlockPathsModel:
+        """Add a directory of block YAMLs and rebuild the library."""
+        path = os.path.expanduser(os.path.abspath(path))
+        if not os.path.isdir(path):
+            raise FileNotFoundError(f"Block path not found: {path}")
+        if path in self._oot_paths:
+            return self.get_block_paths()
+
+        before = len(self._platform.blocks)
+        self._oot_paths.append(path)
+        total = self._rebuild_library()
+        return BlockPathsModel(
+            paths=self._oot_paths.copy(),
+            block_count=total,
+            blocks_added=total - before,
+        )
+
+    def get_block_paths(self) -> BlockPathsModel:
+        """Return current OOT paths and block count."""
+        return BlockPathsModel(
+            paths=self._oot_paths.copy(),
+            block_count=len(self._platform.blocks),
+        )
 
     def make_flowgraph(self, filepath: str = "") -> FlowGraphMiddleware:
         return FlowGraphMiddleware.from_file(self, filepath)
