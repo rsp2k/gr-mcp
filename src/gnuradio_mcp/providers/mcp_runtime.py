@@ -23,6 +23,7 @@ class McpRuntimeProvider:
         self._mcp = mcp_instance
         self._provider = runtime_provider
         self.__init_tools()
+        self.__init_resources()
 
     def __init_tools(self):
         p = self._provider
@@ -85,6 +86,84 @@ class McpRuntimeProvider:
                 "Registered 17 runtime tools (Docker unavailable, "
                 "container tools skipped)"
             )
+
+    def __init_resources(self):
+        from gnuradio_mcp.oot_catalog import (
+            CATALOG,
+            OOTDirectoryIndex,
+            OOTModuleDetail,
+            OOTModuleSummary,
+            build_install_example,
+        )
+
+        oot_mw = self._provider._oot  # None when Docker unavailable
+
+        @self._mcp.resource(
+            "oot://directory",
+            name="oot_directory",
+            description="Index of curated GNU Radio OOT modules available for installation",
+            mime_type="application/json",
+        )
+        def list_oot_directory() -> str:
+            summaries = []
+            for entry in CATALOG.values():
+                installed = None
+                if oot_mw is not None:
+                    installed = entry.name in oot_mw._registry
+                summaries.append(
+                    OOTModuleSummary(
+                        name=entry.name,
+                        description=entry.description,
+                        category=entry.category,
+                        preinstalled=entry.preinstalled,
+                        installed=installed,
+                    )
+                )
+            index = OOTDirectoryIndex(modules=summaries, count=len(summaries))
+            return index.model_dump_json()
+
+        @self._mcp.resource(
+            "oot://directory/{module_name}",
+            name="oot_module_detail",
+            description="Full installation details for a specific OOT module",
+            mime_type="application/json",
+        )
+        def get_oot_module(module_name: str) -> str:
+            entry = CATALOG.get(module_name)
+            if entry is None:
+                known = ", ".join(sorted(CATALOG.keys()))
+                raise ValueError(
+                    f"Unknown module '{module_name}'. Available: {known}"
+                )
+
+            installed = None
+            installed_image_tag = None
+            if oot_mw is not None:
+                info = oot_mw._registry.get(entry.name)
+                installed = info is not None
+                if info is not None:
+                    installed_image_tag = info.image_tag
+
+            detail = OOTModuleDetail(
+                name=entry.name,
+                description=entry.description,
+                category=entry.category,
+                git_url=entry.git_url,
+                branch=entry.branch,
+                build_deps=entry.build_deps,
+                cmake_args=entry.cmake_args,
+                homepage=entry.homepage,
+                gr_versions=entry.gr_versions,
+                preinstalled=entry.preinstalled,
+                installed=installed,
+                installed_image_tag=installed_image_tag,
+                install_example=build_install_example(entry),
+            )
+            return detail.model_dump_json()
+
+        logger.info(
+            "Registered OOT directory resources (%d modules)", len(CATALOG)
+        )
 
     @classmethod
     def create(cls, mcp_instance: FastMCP) -> McpRuntimeProvider:
