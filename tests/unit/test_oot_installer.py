@@ -94,7 +94,9 @@ class TestDockerfileGeneration:
         assert "FROM gnuradio-runtime:latest" in dockerfile
         assert "git clone --depth 1 --branch master" in dockerfile
         assert "https://github.com/tapparelj/gr-lora_sdr.git" in dockerfile
-        assert "cd gr-lora_sdr && mkdir build" in dockerfile
+        assert "cd gr-lora_sdr" in dockerfile
+        assert "fix_binding_hashes.py" in dockerfile
+        assert "mkdir build" in dockerfile
         assert "cmake -DCMAKE_INSTALL_PREFIX=/usr" in dockerfile
         assert "make -j$(nproc)" in dockerfile
         assert "ldconfig" in dockerfile

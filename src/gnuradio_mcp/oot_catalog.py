@@ -230,7 +230,8 @@ CATALOG: dict[str, OOTModuleEntry] = {
             description="IEEE 802.11a/g/p OFDM transceiver",
             category="WiFi",
             git_url="https://github.com/bastibl/gr-ieee802-11",
-            branch="main",
+            branch="maint-3.10",
+            build_deps=["castxml"],
             homepage="https://github.com/bastibl/gr-ieee802-11",
         ),
         _entry(
@@ -238,7 +239,8 @@ CATALOG: dict[str, OOTModuleEntry] = {
             description="IEEE 802.15.4 (Zigbee) O-QPSK transceiver",
             category="IoT",
             git_url="https://github.com/bastibl/gr-ieee802-15-4",
-            branch="main",
+            branch="maint-3.10",
+            build_deps=["castxml"],
             homepage="https://github.com/bastibl/gr-ieee802-15-4",
         ),
         _entry(
@@ -246,7 +248,7 @@ CATALOG: dict[str, OOTModuleEntry] = {
             description="ADS-B (1090 MHz) aircraft transponder decoder",
             category="Aviation",
             git_url="https://github.com/mhostetter/gr-adsb",
-            branch="main",
+            branch="maint-3.10",
             homepage="https://github.com/mhostetter/gr-adsb",
         ),
         _entry(
@@ -254,7 +256,7 @@ CATALOG: dict[str, OOTModuleEntry] = {
             description="Iridium satellite burst detector and demodulator",
             category="Satellite",
             git_url="https://github.com/muccc/gr-iridium",
-            branch="main",
+            branch="master",
             homepage="https://github.com/muccc/gr-iridium",
         ),
         _entry(
@@ -263,23 +265,18 @@ CATALOG: dict[str, OOTModuleEntry] = {
             category="Analysis",
             git_url="https://github.com/gnuradio/gr-inspector",
             branch="master",
+            build_deps=["qtbase5-dev", "libqwt-qt5-dev"],
             homepage="https://github.com/gnuradio/gr-inspector",
+            gr_versions="3.9 (master branch has API compat issues with 3.10)",
         ),
         _entry(
             name="nrsc5",
             description="HD Radio (NRSC-5) digital broadcast decoder",
             category="Broadcast",
             git_url="https://github.com/argilo/gr-nrsc5",
-            branch="main",
+            branch="master",
+            build_deps=["autoconf", "automake", "libtool"],
             homepage="https://github.com/argilo/gr-nrsc5",
-        ),
-        _entry(
-            name="packet_radio",
-            description="Amateur packet radio (AFSK, AX.25) modem",
-            category="Amateur",
-            git_url="https://github.com/duggabe/gr-packet-radio",
-            branch="main",
-            homepage="https://github.com/duggabe/gr-packet-radio",
         ),
     ]
 }

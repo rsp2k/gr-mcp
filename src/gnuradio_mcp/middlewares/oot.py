@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import subprocess
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
 
 # Clone and build
 WORKDIR /build
+COPY fix_binding_hashes.py /tmp/fix_binding_hashes.py
 RUN git clone --depth 1 --branch {branch} {git_url} && \\
-    cd {repo_dir} && mkdir build && cd build && \\
+    cd {repo_dir} && \\
+    python3 /tmp/fix_binding_hashes.py . && \\
+    mkdir build && cd build && \\
     cmake -DCMAKE_INSTALL_PREFIX=/usr {cmake_args}.. && \\
     make -j$(nproc) && make install && \\
     ldconfig && \\
@@ -36,6 +40,44 @@ WORKDIR /flowgraphs
 
 # Bridge Python site-packages (cmake installs to versioned path)
 ENV PYTHONPATH="/usr/lib/python3.11/site-packages:${{PYTHONPATH}}"
+"""
+
+# Standalone script injected into OOT Docker builds to fix stale
+# pybind11 binding hashes that would otherwise trigger castxml regen.
+FIX_BINDING_HASHES_SCRIPT = """\
+#!/usr/bin/env python3
+\"\"\"Fix stale BINDTOOL_HEADER_FILE_HASH in pybind11 binding files.
+
+GNU Radio's GR_PYBIND_MAKE_OOT cmake macro compares MD5 hashes of C++
+headers against values stored in the binding .cc files.  When they
+differ it tries to regenerate via castxml, which often fails in minimal
+Docker images.  This script updates the hashes to match the actual
+headers so cmake skips the regeneration step.
+\"\"\"
+import hashlib, pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(".")
+bindings = root / "python" / "bindings"
+if not bindings.is_dir():
+    sys.exit(0)
+
+for cc in sorted(bindings.glob("*_python.cc")):
+    text = cc.read_text()
+    m = re.search(r"BINDTOOL_HEADER_FILE\\((\\S+)\\)", text)
+    if not m:
+        continue
+    header = next(root.joinpath("include").rglob(m.group(1)), None)
+    if not header:
+        continue
+    actual = hashlib.md5(header.read_bytes()).hexdigest()
+    new_text = re.sub(
+        r"BINDTOOL_HEADER_FILE_HASH\\([a-f0-9]+\\)",
+        f"BINDTOOL_HEADER_FILE_HASH({actual})",
+        text,
+    )
+    if new_text != text:
+        cc.write_text(new_text)
+        print(f"Fixed binding hash: {cc.name}")
 """
 
 
@@ -235,13 +277,30 @@ class OOTInstallerMiddleware:
         except Exception:
             return False
 
+    @staticmethod
+    def _build_context(dockerfile: str) -> io.BytesIO:
+        """Create a tar archive build context with Dockerfile and helper scripts."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, content in [
+                ("Dockerfile", dockerfile),
+                ("fix_binding_hashes.py", FIX_BINDING_HASHES_SCRIPT),
+            ]:
+                data = content.encode("utf-8")
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        buf.seek(0)
+        return buf
+
     def _docker_build(self, dockerfile: str, tag: str) -> list[str]:
         """Build a Docker image from a Dockerfile string. Returns log lines."""
-        f = io.BytesIO(dockerfile.encode("utf-8"))
+        context = self._build_context(dockerfile)
         log_lines: list[str] = []
         try:
             _image, build_log = self._client.images.build(
-                fileobj=f,
+                fileobj=context,
+                custom_context=True,
                 tag=tag,
                 rm=True,
                 forcerm=True,
