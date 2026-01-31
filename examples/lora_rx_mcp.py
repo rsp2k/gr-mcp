@@ -47,7 +47,7 @@ class lora_rx_mcp(gr.top_block):
         # Blocks
         ##################################################
 
-        self.xmlrpc_server_0 = SimpleXMLRPCServer(('0.0.0.0', 8080), allow_none=True)
+        self.xmlrpc_server_0 = SimpleXMLRPCServer(('localhost', 8080), allow_none=True)
         self.xmlrpc_server_0.register_instance(self)
         self.xmlrpc_server_0_thread = threading.Thread(target=self.xmlrpc_server_0.serve_forever)
         self.xmlrpc_server_0_thread.daemon = True
@@ -77,7 +77,7 @@ class lora_rx_mcp(gr.top_block):
                 window.WIN_HAMMING,
                 6.76))
         self.lora_rx_0 = lora_sdr.lora_sdr_lora_rx( bw=lora_bw, cr=1, has_crc=True, impl_head=False, pay_len=255, samp_rate=(int(samp_rate/2)), sf=lora_sf, sync_word=[0x12], soft_decoding=True, ldro_mode=2, print_rx=[True,True])
-        self.blocks_message_debug_0 = blocks.message_debug(True)
+        self.blocks_message_debug_0 = blocks.message_debug(True, gr.log_levels.info)
 
 
         ##################################################
@@ -93,8 +93,8 @@ class lora_rx_mcp(gr.top_block):
 
     def set_samp_rate(self, samp_rate):
         self.samp_rate = samp_rate
-        self.osmosdr_source_0.set_sample_rate(self.samp_rate)
         self.low_pass_filter_0.set_taps(firdes.low_pass(1, self.samp_rate, 200e3, 50e3, window.WIN_HAMMING, 6.76))
+        self.osmosdr_source_0.set_sample_rate(self.samp_rate)
 
     def get_lora_sf(self):
         return self.lora_sf
@@ -136,14 +136,7 @@ def main(top_block_cls=lora_rx_mcp, options=None):
     try:
         input('Press Enter to quit: ')
     except EOFError:
-        # No stdin (Docker detached mode) — block on signal instead
-        try:
-            signal.pause()
-        except AttributeError:
-            # signal.pause() not available on Windows
-            import time
-            while True:
-                time.sleep(1)
+        pass
     tb.stop()
     tb.wait()
 
