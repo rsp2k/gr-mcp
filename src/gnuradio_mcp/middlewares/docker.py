@@ -10,6 +10,7 @@ from gnuradio_mcp.middlewares.ports import (
     detect_xmlrpc_port,
     find_free_port,
     is_port_available,
+    patch_flowgraph,
     patch_xmlrpc_port,
 )
 from gnuradio_mcp.models import ContainerModel, ScreenshotModel
@@ -89,10 +90,15 @@ class DockerMiddleware:
         if enable_vnc:
             vnc_port_resolved = self._resolve_port(DEFAULT_VNC_PORT, "VNC")
 
-        # --- Flowgraph port patching ---
+        # --- Flowgraph patching (port rewrite + compat fixes) ---
         embedded_port = detect_xmlrpc_port(fg_path)
-        if embedded_port is not None and embedded_port != xmlrpc_port:
-            fg_path = patch_xmlrpc_port(fg_path, xmlrpc_port)
+        port_to_patch = (
+            xmlrpc_port
+            if embedded_port is not None and embedded_port != xmlrpc_port
+            else None
+        )
+        fg_path = patch_flowgraph(fg_path, xmlrpc_port=port_to_patch)
+        if port_to_patch is not None:
             logger.info(
                 "Patched flowgraph XML-RPC port: %d -> %d",
                 embedded_port,

@@ -477,10 +477,10 @@ class TestPortAllocation:
         # Original file should be unchanged
         assert "8080" in fg_file.read_text()
 
-    def test_launch_no_patch_when_ports_match(
+    def test_launch_compat_patch_when_ports_match(
         self, docker_mw, mock_docker_client, tmp_path
     ):
-        """When flowgraph port matches requested port, no patching should occur."""
+        """When ports match, port is unchanged but compat patches still apply."""
         fg_file = tmp_path / "flowgraph.py"
         fg_file.write_text(_SAMPLE_FG)
 
@@ -498,6 +498,13 @@ class TestPortAllocation:
             )
 
         assert result.xmlrpc_port == 8080
-        # No patched files should exist (only the original)
+        # Compat patches (localhost→0.0.0.0) create a patched file even
+        # when the port matches, so we expect 2 .py files.
         py_files = list(tmp_path.glob("*.py"))
-        assert len(py_files) == 1
+        assert len(py_files) == 2
+        patched = [f for f in py_files if "patched" in f.name]
+        assert len(patched) == 1
+        # Port unchanged, but localhost rewritten to 0.0.0.0
+        patched_text = patched[0].read_text()
+        assert "8080" in patched_text
+        assert "'0.0.0.0'" in patched_text
