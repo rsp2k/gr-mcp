@@ -218,6 +218,33 @@ CATALOG: dict[str, OOTModuleEntry] = {
         ),
         # ── Installable via install_oot_module ──
         _entry(
+            name="foo",
+            description="Wireshark PCAP connector, burst tagger, periodic msg source",
+            category="Utility",
+            git_url="https://github.com/bastibl/gr-foo",
+            branch="maint-3.10",
+            build_deps=["castxml"],
+            homepage="https://github.com/bastibl/gr-foo",
+        ),
+        _entry(
+            name="owc",
+            description="Optical Wireless Communication channel simulation and modulation",
+            category="Optical",
+            git_url="https://github.com/UCaNLabUMB/gr-owc",
+            branch="main",
+            homepage="https://github.com/UCaNLabUMB/gr-owc",
+        ),
+        _entry(
+            name="dab",
+            description="DAB/DAB+ digital audio broadcast receiver",
+            category="Broadcast",
+            git_url="https://github.com/hboeglen/gr-dab",
+            branch="maint-3.10",
+            build_deps=["autoconf", "automake", "libtool", "libfaad-dev"],
+            cmake_args=["-DENABLE_DOXYGEN=OFF"],
+            homepage="https://github.com/hboeglen/gr-dab",
+        ),
+        _entry(
             name="lora_sdr",
             description="LoRa PHY transceiver (CSS modulation/demodulation)",
             category="IoT",
