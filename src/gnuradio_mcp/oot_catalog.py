@@ -287,6 +287,22 @@ CATALOG: dict[str, OOTModuleEntry] = {
             homepage="https://github.com/muccc/gr-iridium",
         ),
         _entry(
+            name="leo",
+            description="LEO satellite channel simulator (Doppler, path loss, atmosphere)",
+            category="Satellite",
+            git_url="https://gitlab.com/librespacefoundation/gr-leo",
+            branch="gnuradio-3.10",
+            homepage="https://gitlab.com/librespacefoundation/gr-leo",
+        ),
+        _entry(
+            name="dl5eu",
+            description="DVB-T OFDM synchronization and TPS decoder",
+            category="Broadcast",
+            git_url="https://github.com/dl5eu/gr-dl5eu",
+            branch="main",
+            homepage="https://github.com/dl5eu/gr-dl5eu",
+        ),
+        _entry(
             name="inspector",
             description="Signal analysis toolbox (energy detection, OFDM estimation)",
             category="Analysis",

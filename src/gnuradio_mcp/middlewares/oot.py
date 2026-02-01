@@ -57,27 +57,30 @@ headers so cmake skips the regeneration step.
 import hashlib, pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(".")
-bindings = root / "python" / "bindings"
-if not bindings.is_dir():
+
+# GR 3.9-: python/bindings/  |  GR 3.10+: python/<module>/bindings/
+binding_dirs = list(root.joinpath("python").glob("**/bindings"))
+if not binding_dirs:
     sys.exit(0)
 
-for cc in sorted(bindings.glob("*_python.cc")):
-    text = cc.read_text()
-    m = re.search(r"BINDTOOL_HEADER_FILE\\((\\S+)\\)", text)
-    if not m:
-        continue
-    header = next(root.joinpath("include").rglob(m.group(1)), None)
-    if not header:
-        continue
-    actual = hashlib.md5(header.read_bytes()).hexdigest()
-    new_text = re.sub(
-        r"BINDTOOL_HEADER_FILE_HASH\\([a-f0-9]+\\)",
-        f"BINDTOOL_HEADER_FILE_HASH({actual})",
-        text,
-    )
-    if new_text != text:
-        cc.write_text(new_text)
-        print(f"Fixed binding hash: {cc.name}")
+for bindings in binding_dirs:
+    for cc in sorted(bindings.glob("*_python.cc")):
+        text = cc.read_text()
+        m = re.search(r"BINDTOOL_HEADER_FILE\\((\\S+)\\)", text)
+        if not m:
+            continue
+        header = next(root.joinpath("include").rglob(m.group(1)), None)
+        if not header:
+            continue
+        actual = hashlib.md5(header.read_bytes()).hexdigest()
+        new_text = re.sub(
+            r"BINDTOOL_HEADER_FILE_HASH\\([a-f0-9]+\\)",
+            f"BINDTOOL_HEADER_FILE_HASH({actual})",
+            text,
+        )
+        if new_text != text:
+            cc.write_text(new_text)
+            print(f"Fixed binding hash: {cc.name}")
 """
 
 
