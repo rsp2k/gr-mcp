@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from gnuradio_mcp.models import OOTImageInfo, OOTInstallResult
+from gnuradio_mcp.models import ComboImageInfo, ComboImageResult, OOTImageInfo, OOTInstallResult
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,8 @@ class OOTInstallerMiddleware:
         self._base_image = base_image
         self._registry_path = Path.home() / ".gr-mcp" / "oot-registry.json"
         self._registry: dict[str, OOTImageInfo] = self._load_registry()
+        self._combo_registry_path = Path.home() / ".gr-mcp" / "oot-combo-registry.json"
+        self._combo_registry: dict[str, ComboImageInfo] = self._load_combo_registry()
 
     # ──────────────────────────────────────────
     # Public API
@@ -319,18 +321,25 @@ class OOTInstallerMiddleware:
         return log_lines
 
     def _load_registry(self) -> dict[str, OOTImageInfo]:
-        """Load the OOT image registry from disk."""
+        """Load the OOT image registry from disk.
+
+        Validates entries individually so one corrupted entry
+        doesn't discard the entire registry.
+        """
         if not self._registry_path.exists():
             return {}
         try:
             data = json.loads(self._registry_path.read_text())
-            return {
-                k: OOTImageInfo(**v)
-                for k, v in data.items()
-            }
         except Exception as e:
-            logger.warning("Failed to load OOT registry: %s", e)
+            logger.warning("Failed to parse OOT registry JSON: %s", e)
             return {}
+        registry: dict[str, OOTImageInfo] = {}
+        for k, v in data.items():
+            try:
+                registry[k] = OOTImageInfo(**v)
+            except Exception as e:
+                logger.warning("Skipping corrupt registry entry '%s': %s", k, e)
+        return registry
 
     def _save_registry(self) -> None:
         """Persist the OOT image registry to disk."""
@@ -340,3 +349,186 @@ class OOTInstallerMiddleware:
             for k, v in self._registry.items()
         }
         self._registry_path.write_text(json.dumps(data, indent=2))
+
+    # ──────────────────────────────────────────
+    # Combo Image (Multi-OOT) Support
+    # ──────────────────────────────────────────
+
+    @staticmethod
+    def _combo_key(module_names: list[str]) -> str:
+        """Deterministic key from module names: sorted, deduped, joined."""
+        names = sorted(set(module_names))
+        return "combo:" + "+".join(names)
+
+    @staticmethod
+    def _combo_image_tag(module_names: list[str]) -> str:
+        """Deterministic image tag for a combo of modules."""
+        names = sorted(set(module_names))
+        return f"gr-combo-{'-'.join(names)}:latest"
+
+    def generate_combo_dockerfile(self, module_names: list[str]) -> str:
+        """Generate multi-stage Dockerfile that COPYs from existing single-OOT images."""
+        names = sorted(set(module_names))
+        stages: list[str] = []
+        copies: list[str] = []
+
+        for name in names:
+            info = self._registry.get(name)
+            if info is None:
+                raise ValueError(
+                    f"Module '{name}' not found in OOT registry. "
+                    f"Build it first with build_module()."
+                )
+            stage_alias = f"stage_{name}"
+            stages.append(f"FROM {info.image_tag} AS {stage_alias}")
+            for path in ["/usr/lib/", "/usr/include/", "/usr/share/gnuradio/"]:
+                copies.append(f"COPY --from={stage_alias} {path} {path}")
+
+        return "\n".join([
+            *stages,
+            "",
+            f"FROM {self._base_image}",
+            "",
+            *copies,
+            "",
+            "RUN ldconfig",
+            "WORKDIR /flowgraphs",
+            'ENV PYTHONPATH="/usr/lib/python3.11/site-packages:${PYTHONPATH}"',
+            "",
+        ])
+
+    def build_combo_image(
+        self,
+        module_names: list[str],
+        force: bool = False,
+    ) -> ComboImageResult:
+        """Build a combined Docker image with multiple OOT modules.
+
+        Modules already in the registry are used as-is. Modules found
+        in the OOT catalog but not yet built are auto-built first.
+        """
+        from gnuradio_mcp.oot_catalog import CATALOG
+
+        names = sorted(set(module_names))
+        if len(names) < 2:
+            return ComboImageResult(
+                success=False,
+                error="At least 2 distinct modules required for a combo image.",
+            )
+
+        combo_key = self._combo_key(names)
+        image_tag = self._combo_image_tag(names)
+
+        try:
+            # Idempotent: skip if combo already exists
+            if not force and self._image_exists(image_tag):
+                existing = self._combo_registry.get(combo_key)
+                if existing is not None:
+                    return ComboImageResult(
+                        success=True,
+                        image=existing,
+                        skipped=True,
+                    )
+
+            # Auto-build missing modules from catalog
+            modules_built: list[str] = []
+            for name in names:
+                if name in self._registry:
+                    continue
+                entry = CATALOG.get(name)
+                if entry is None:
+                    return ComboImageResult(
+                        success=False,
+                        error=(
+                            f"Module '{name}' is not in the OOT registry and "
+                            f"not found in the catalog. Build it manually first "
+                            f"with build_module()."
+                        ),
+                    )
+                # Auto-build from catalog
+                logger.info("Auto-building '%s' from catalog for combo image", name)
+                result = self.build_module(
+                    git_url=entry.git_url,
+                    branch=entry.branch,
+                    build_deps=entry.build_deps or None,
+                    cmake_args=entry.cmake_args or None,
+                )
+                if not result.success:
+                    return ComboImageResult(
+                        success=False,
+                        error=f"Auto-build of '{name}' failed: {result.error}",
+                        modules_built=modules_built,
+                    )
+                modules_built.append(name)
+
+            # Generate and build combo
+            dockerfile = self.generate_combo_dockerfile(names)
+            log_lines = self._docker_build(dockerfile, image_tag)
+            build_log_tail = "\n".join(log_lines[-30:])
+
+            # Collect module infos for the combo record
+            module_infos = [self._registry[n] for n in names]
+
+            info = ComboImageInfo(
+                combo_key=combo_key,
+                image_tag=image_tag,
+                modules=module_infos,
+                built_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self._combo_registry[combo_key] = info
+            self._save_combo_registry()
+
+            return ComboImageResult(
+                success=True,
+                image=info,
+                build_log_tail=build_log_tail,
+                modules_built=modules_built,
+            )
+
+        except Exception as e:
+            logger.exception("Combo image build failed")
+            return ComboImageResult(
+                success=False,
+                error=str(e),
+            )
+
+    def list_combo_images(self) -> list[ComboImageInfo]:
+        """List all combined multi-OOT images."""
+        return list(self._combo_registry.values())
+
+    def remove_combo_image(self, combo_key: str) -> bool:
+        """Remove a combo image by its key (e.g., 'combo:adsb+lora_sdr')."""
+        info = self._combo_registry.pop(combo_key, None)
+        if info is None:
+            return False
+
+        try:
+            self._client.images.remove(info.image_tag, force=True)
+        except Exception as e:
+            logger.warning(
+                "Failed to remove combo Docker image %s: %s", info.image_tag, e
+            )
+
+        self._save_combo_registry()
+        return True
+
+    # ──────────────────────────────────────────
+    # Combo Registry Persistence
+    # ──────────────────────────────────────────
+
+    def _load_combo_registry(self) -> dict[str, ComboImageInfo]:
+        """Load the combo image registry from disk."""
+        if not self._combo_registry_path.exists():
+            return {}
+        try:
+            data = json.loads(self._combo_registry_path.read_text())
+            return {k: ComboImageInfo(**v) for k, v in data.items()}
+        except Exception as e:
+            logger.warning("Failed to load combo registry: %s", e)
+            return {}
+
+    def _save_combo_registry(self) -> None:
+        """Persist the combo image registry to disk."""
+        self._combo_registry_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: v.model_dump() for k, v in self._combo_registry.items()}
+        self._combo_registry_path.write_text(json.dumps(data, indent=2))

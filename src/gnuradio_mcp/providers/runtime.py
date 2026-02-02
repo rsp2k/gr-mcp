@@ -12,6 +12,8 @@ from gnuradio_mcp.middlewares.oot import OOTInstallerMiddleware
 from gnuradio_mcp.middlewares.thrift import ThriftMiddleware
 from gnuradio_mcp.middlewares.xmlrpc import XmlRpcMiddleware
 from gnuradio_mcp.models import (
+    ComboImageInfo,
+    ComboImageResult,
     ConnectionInfoModel,
     ContainerModel,
     CoverageDataModel,
@@ -718,3 +720,33 @@ class RuntimeProvider:
         """Remove an OOT module image and its registry entry."""
         oot = self._require_oot()
         return oot.remove_image(module_name)
+
+    # ──────────────────────────────────────────
+    # Multi-OOT Combo Images
+    # ──────────────────────────────────────────
+
+    def build_multi_oot_image(
+        self,
+        module_names: list[str],
+        force: bool = False,
+    ) -> ComboImageResult:
+        """Combine multiple OOT modules into a single Docker image.
+
+        Modules are merged using multi-stage Docker builds from existing
+        single-OOT images. Missing modules that exist in the catalog
+        are auto-built first.
+
+        Use the returned image_tag with launch_flowgraph().
+        """
+        oot = self._require_oot()
+        return oot.build_combo_image(module_names, force)
+
+    def list_combo_images(self) -> list[ComboImageInfo]:
+        """List all combined multi-OOT images."""
+        oot = self._require_oot()
+        return oot.list_combo_images()
+
+    def remove_combo_image(self, combo_key: str) -> bool:
+        """Remove a combined image by its combo key (e.g., 'combo:adsb+lora_sdr')."""
+        oot = self._require_oot()
+        return oot.remove_combo_image(combo_key)

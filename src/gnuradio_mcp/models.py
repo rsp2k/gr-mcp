@@ -391,3 +391,23 @@ class OOTInstallResult(BaseModel):
     build_log_tail: str = ""  # Last ~30 lines of build output
     error: str | None = None
     skipped: bool = False  # True if image already existed
+
+
+class ComboImageInfo(BaseModel):
+    """Metadata for a combined multi-OOT image."""
+
+    combo_key: str  # "combo:adsb+lora_sdr" (sorted, deduped)
+    image_tag: str  # "gr-combo-adsb-lora_sdr:latest"
+    modules: list[OOTImageInfo]  # source images used
+    built_at: str  # ISO-8601
+
+
+class ComboImageResult(BaseModel):
+    """Result of combo image build."""
+
+    success: bool
+    image: ComboImageInfo | None = None
+    build_log_tail: str = ""
+    error: str | None = None
+    skipped: bool = False  # True if combo image already existed
+    modules_built: list[str] = []  # modules auto-built from catalog first
