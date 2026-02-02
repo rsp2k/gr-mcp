@@ -9,7 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from gnuradio_mcp.models import ComboImageInfo, ComboImageResult, OOTImageInfo, OOTInstallResult
+import re
+
+from gnuradio_mcp.models import (
+    ComboImageInfo,
+    ComboImageResult,
+    OOTDetectionResult,
+    OOTImageInfo,
+    OOTInstallResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -549,3 +557,206 @@ class OOTInstallerMiddleware:
         self._combo_registry_path.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v.model_dump() for k, v in self._combo_registry.items()}
         self._combo_registry_path.write_text(json.dumps(data, indent=2))
+
+    # ──────────────────────────────────────────
+    # OOT Module Detection
+    # ──────────────────────────────────────────
+
+    # Core GNU Radio module prefixes to ignore during detection
+    _CORE_BLOCK_PREFIXES = frozenset([
+        "blocks_", "analog_", "digital_", "filter_", "qtgui_", "fft_",
+        "audio_", "channels_", "trellis_", "vocoder_", "video_sdl_",
+        "dtv_", "fec_", "network_", "pdu_", "soapy_", "uhd_", "zeromq_",
+        "variable_",  # All variable_* blocks (qtgui controls, function probe, etc.)
+    ])
+    _CORE_BLOCK_EXACT = frozenset([
+        # Special blocks without prefixes
+        "variable",  # The basic variable block (no underscore)
+        "import", "snippet", "options", "parameter",
+        "pad_source", "pad_sink", "virtual_source", "virtual_sink",
+        "note", "epy_block", "epy_module",
+        # Core filter blocks (not prefixed with filter_)
+        "low_pass_filter", "high_pass_filter", "band_pass_filter",
+        "band_reject_filter", "root_raised_cosine_filter",
+        # XML-RPC (part of core GR)
+        "xmlrpc_server", "xmlrpc_client",
+    ])
+
+    # Explicit block ID → module mappings for blocks that don't follow
+    # the standard `module_prefix_` naming convention
+    _BLOCK_TO_MODULE: dict[str, str] = {
+        # gr-lora_sdr: main blocks use short names
+        "lora_rx": "lora_sdr",
+        "lora_tx": "lora_sdr",
+        # gr-adsb: decoder blocks
+        "adsb_decoder": "adsb",
+        "adsb_framer": "adsb",
+        # gr-iridium: main blocks
+        "iridium_extractor": "iridium",
+        "iridium_frame_sorter": "iridium",
+        "iridium_qpsk_demod": "iridium",
+        # gr-rds: decoder/encoder
+        "rds_decoder": "rds",
+        "rds_encoder": "rds",
+        "rds_parser": "rds",
+        "rds_panel": "rds",
+        # gr-satellites: common blocks
+        "satellites_ax25_deframer": "satellites",
+        "satellites_hdlc_deframer": "satellites",
+        "satellites_nrzi_decode": "satellites",
+        # gr-gsm: receiver blocks
+        "gsm_receiver": "gsm",
+        "gsm_input": "gsm",
+        "gsm_clock_offset_control": "gsm",
+        "gsm_controlled_rotator_cc": "gsm",
+    }
+
+    def detect_required_modules(self, flowgraph_path: str) -> OOTDetectionResult:
+        """Detect OOT modules required by a flowgraph.
+
+        For .py files: parse Python imports
+        For .grc files: heuristic prefix matching against catalog
+
+        Args:
+            flowgraph_path: Path to a .py or .grc flowgraph file
+
+        Returns:
+            OOTDetectionResult with detected modules and recommended image
+        """
+        path = Path(flowgraph_path)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Flowgraph not found: {flowgraph_path}")
+
+        if path.suffix == ".py":
+            return self._detect_from_python(path)
+        elif path.suffix == ".grc":
+            return self._detect_from_grc(path)
+        else:
+            raise ValueError(
+                f"Unsupported file type: {path.suffix}. "
+                f"Expected .py or .grc"
+            )
+
+    def _detect_from_python(self, path: Path) -> OOTDetectionResult:
+        """Parse Python imports to find OOT modules."""
+        from gnuradio_mcp.oot_catalog import CATALOG
+
+        content = path.read_text()
+        modules: set[str] = set()
+
+        # Pattern: import gnuradio.MODULE or from gnuradio import MODULE
+        for match in re.finditer(
+            r"(?:import gnuradio\.(\w+)|from gnuradio import (\w+))", content
+        ):
+            module = match.group(1) or match.group(2)
+            if module in CATALOG:
+                modules.add(module)
+
+        # Pattern: import MODULE (top-level OOT like osmosdr)
+        for match in re.finditer(r"^import (\w+)\s*$", content, re.MULTILINE):
+            module = match.group(1)
+            if module in CATALOG:
+                modules.add(module)
+
+        # Pattern: from MODULE import ... (top-level OOT)
+        for match in re.finditer(r"^from (\w+) import", content, re.MULTILINE):
+            module = match.group(1)
+            if module in CATALOG:
+                modules.add(module)
+
+        sorted_modules = sorted(modules)
+        return OOTDetectionResult(
+            flowgraph_path=str(path),
+            detected_modules=sorted_modules,
+            detection_method="python_imports",
+            recommended_image=self._recommend_image(sorted_modules),
+        )
+
+    def _detect_from_grc(self, path: Path) -> OOTDetectionResult:
+        """Heuristic: match block IDs against catalog module prefixes."""
+        import yaml
+
+        from gnuradio_mcp.oot_catalog import CATALOG
+
+        data = yaml.safe_load(path.read_text())
+        blocks = data.get("blocks", [])
+        block_ids = [b.get("id", "") for b in blocks if isinstance(b, dict)]
+
+        modules: set[str] = set()
+        unknown: list[str] = []
+
+        for block_id in block_ids:
+            # Skip empty IDs
+            if not block_id:
+                continue
+
+            # Skip core GNU Radio blocks
+            if block_id in self._CORE_BLOCK_EXACT:
+                continue
+            if any(block_id.startswith(prefix) for prefix in self._CORE_BLOCK_PREFIXES):
+                continue
+
+            # Phase 1: Check explicit block-to-module mapping (handles edge cases)
+            if block_id in self._BLOCK_TO_MODULE:
+                module = self._BLOCK_TO_MODULE[block_id]
+                if module in CATALOG:
+                    modules.add(module)
+                continue
+
+            # Phase 2: Match against catalog module names as prefixes
+            matched = False
+            for module_name in CATALOG:
+                # Check for prefix match (e.g., "lora_sdr_gray_demap" -> "lora_sdr")
+                # Also handle cases like "osmosdr_source" -> "osmosdr"
+                if block_id.startswith(f"{module_name}_") or block_id == module_name:
+                    modules.add(module_name)
+                    matched = True
+                    break
+
+            if not matched and "_" in block_id:
+                # Looks like an OOT block but not in catalog
+                # Don't flag all unknown blocks, just those with OOT-like patterns
+                prefix = block_id.split("_")[0]
+                # Check it's not a known core prefix that might have been missed
+                if not any(p.startswith(prefix) for p in self._CORE_BLOCK_PREFIXES):
+                    unknown.append(block_id)
+
+        sorted_modules = sorted(modules)
+        return OOTDetectionResult(
+            flowgraph_path=str(path),
+            detected_modules=sorted_modules,
+            unknown_blocks=unknown,
+            detection_method="grc_prefix_heuristic",
+            recommended_image=self._recommend_image(sorted_modules),
+        )
+
+    def _recommend_image(self, modules: list[str]) -> str | None:
+        """Recommend Docker image for detected modules.
+
+        Args:
+            modules: Sorted list of module names
+
+        Returns:
+            - Base runtime image if no OOT modules
+            - Single OOT image tag if one module (and built)
+            - Combo image tag if multiple modules
+        """
+        if not modules:
+            return self._base_image
+
+        if len(modules) == 1:
+            # Single module - check if already built
+            info = self._registry.get(modules[0])
+            if info:
+                return info.image_tag
+            # Not built yet - return what the tag would be
+            return None
+
+        # Multiple modules - return combo tag (may or may not exist yet)
+        combo_key = self._combo_key(modules)
+        combo = self._combo_registry.get(combo_key)
+        if combo:
+            return combo.image_tag
+        # Return what the tag would be
+        return self._combo_image_tag(modules)

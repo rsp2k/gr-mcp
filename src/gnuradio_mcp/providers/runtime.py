@@ -20,6 +20,7 @@ from gnuradio_mcp.models import (
     CoverageReportModel,
     KnobModel,
     KnobPropertiesModel,
+    OOTDetectionResult,
     OOTImageInfo,
     OOTInstallResult,
     PerfCounterModel,
@@ -109,6 +110,7 @@ class RuntimeProvider:
         enable_perf_counters: bool = True,
         device_paths: list[str] | None = None,
         image: str | None = None,
+        auto_image: bool = False,
     ) -> ContainerModel:
         """Launch a flowgraph in a Docker container with Xvfb.
 
@@ -123,8 +125,17 @@ class RuntimeProvider:
             enable_perf_counters: Enable performance counters (requires controlport)
             device_paths: Host device paths to pass through
             image: Docker image to use (e.g., 'gnuradio-lora-runtime:latest')
+            auto_image: Automatically detect required OOT modules and build
+                appropriate Docker image. If True and image is not specified,
+                analyzes the flowgraph to determine OOT dependencies and
+                builds a single-OOT or combo image as needed.
         """
         docker = self._require_docker()
+
+        # Auto-detect and build image if requested
+        if auto_image and image is None and self._has_oot:
+            image = self._auto_select_image(flowgraph_path)
+
         if name is None:
             name = f"gr-{Path(flowgraph_path).stem}"
         return docker.launch(
@@ -139,6 +150,50 @@ class RuntimeProvider:
             device_paths=device_paths,
             image=image,
         )
+
+    def _auto_select_image(self, flowgraph_path: str) -> str | None:
+        """Detect OOT modules and build/select appropriate image.
+
+        Auto-builds missing modules from catalog when needed.
+        """
+        from gnuradio_mcp.oot_catalog import CATALOG
+
+        oot = self._require_oot()
+        detection = oot.detect_required_modules(flowgraph_path)
+
+        if not detection.detected_modules:
+            logger.info("No OOT modules detected, using base runtime image")
+            return detection.recommended_image
+
+        modules = detection.detected_modules
+        logger.info("Detected OOT modules: %s", modules)
+
+        if len(modules) == 1:
+            # Single module - ensure it's built
+            module = modules[0]
+            if module not in oot._registry:
+                entry = CATALOG.get(module)
+                if entry:
+                    logger.info("Auto-building module '%s' from catalog", module)
+                    result = oot.build_module(
+                        git_url=entry.git_url,
+                        branch=entry.branch,
+                        build_deps=entry.build_deps or None,
+                        cmake_args=entry.cmake_args or None,
+                    )
+                    if not result.success:
+                        logger.error("Auto-build of '%s' failed: %s", module, result.error)
+                        return None
+            info = oot._registry.get(module)
+            return info.image_tag if info else None
+        else:
+            # Multiple modules - build combo
+            logger.info("Building combo image for modules: %s", modules)
+            result = oot.build_combo_image(modules)
+            if result.success and result.image:
+                return result.image.image_tag
+            logger.error("Combo image build failed: %s", result.error)
+            return None
 
     def list_containers(self) -> list[ContainerModel]:
         """List all gr-mcp managed containers."""
@@ -683,8 +738,36 @@ class RuntimeProvider:
         return deleted
 
     # ──────────────────────────────────────────
-    # OOT Module Installation
+    # OOT Module Detection & Installation
     # ──────────────────────────────────────────
+
+    def detect_oot_modules(self, flowgraph_path: str) -> OOTDetectionResult:
+        """Detect which OOT modules a flowgraph requires.
+
+        Analyzes .py or .grc files to find OOT module dependencies.
+        Returns recommended Docker image to use with launch_flowgraph().
+
+        For .py files: parses Python imports (most accurate)
+        For .grc files: uses heuristic prefix matching against the
+            OOT catalog (fast, no Docker required)
+
+        Args:
+            flowgraph_path: Path to a .py or .grc flowgraph file
+
+        Returns:
+            OOTDetectionResult with detected modules, unknown blocks,
+            and recommended image tag.
+
+        Example:
+            result = detect_oot_modules("lora_rx.grc")
+            # -> detected_modules=["lora_sdr", "osmosdr"]
+            # -> recommended_image="gr-combo-lora_sdr-osmosdr:latest"
+
+            # Then launch with auto-built image:
+            launch_flowgraph("lora_rx.py", auto_image=True)
+        """
+        oot = self._require_oot()
+        return oot.detect_required_modules(flowgraph_path)
 
     def install_oot_module(
         self,

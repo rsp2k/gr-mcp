@@ -1,7 +1,7 @@
 """Unit tests for OOT module installer middleware.
 
 Tests Dockerfile generation, module name extraction, registry persistence,
-and image naming — all without requiring Docker.
+image naming, and OOT module detection — all without requiring Docker.
 """
 
 import json
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from gnuradio_mcp.middlewares.oot import OOTInstallerMiddleware
-from gnuradio_mcp.models import ComboImageInfo, OOTImageInfo
+from gnuradio_mcp.models import ComboImageInfo, OOTDetectionResult, OOTImageInfo
 
 
 @pytest.fixture
@@ -592,3 +592,256 @@ class TestBuildComboImage:
         result = oot.build_combo_image(["adsb", "lora_sdr"], force=True)
         assert result.success is True
         assert result.skipped is False
+
+
+# ──────────────────────────────────────────
+# OOT Detection from Python Files
+# ──────────────────────────────────────────
+
+
+class TestDetectFromPython:
+    def test_detects_gnuradio_import(self, oot, tmp_path):
+        """Detects 'import gnuradio.MODULE' pattern."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text(
+            "import gnuradio.lora_sdr as lora_sdr\n"
+            "from gnuradio import blocks\n"
+        )
+        result = oot.detect_required_modules(str(py_file))
+        assert result.detected_modules == ["lora_sdr"]
+        assert result.detection_method == "python_imports"
+
+    def test_detects_from_gnuradio_import(self, oot, tmp_path):
+        """Detects 'from gnuradio import MODULE' pattern."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("from gnuradio import adsb, blocks, analog\n")
+        result = oot.detect_required_modules(str(py_file))
+        assert result.detected_modules == ["adsb"]
+
+    def test_detects_multiple_modules(self, oot, tmp_path):
+        """Detects multiple OOT modules in one file."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text(
+            "import gnuradio.lora_sdr as lora_sdr\n"
+            "from gnuradio import adsb\n"
+        )
+        result = oot.detect_required_modules(str(py_file))
+        assert result.detected_modules == ["adsb", "lora_sdr"]
+
+    def test_detects_toplevel_osmosdr(self, oot, tmp_path):
+        """Detects top-level 'import osmosdr' (not in gnuradio namespace)."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("import osmosdr\n")
+        result = oot.detect_required_modules(str(py_file))
+        assert "osmosdr" in result.detected_modules
+
+    def test_detects_from_toplevel_import(self, oot, tmp_path):
+        """Detects 'from MODULE import ...' for top-level OOT."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("from osmosdr import source\n")
+        result = oot.detect_required_modules(str(py_file))
+        assert "osmosdr" in result.detected_modules
+
+    def test_ignores_core_modules(self, oot, tmp_path):
+        """Ignores core GNU Radio modules not in catalog."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text(
+            "from gnuradio import blocks, analog, gr, digital, filter\n"
+            "import numpy\n"
+        )
+        result = oot.detect_required_modules(str(py_file))
+        assert result.detected_modules == []
+
+    def test_no_oot_returns_empty(self, oot, tmp_path):
+        """Returns empty list when no OOT imports found."""
+        py_file = tmp_path / "test.py"
+        py_file.write_text("from gnuradio import blocks\nprint('hello')\n")
+        result = oot.detect_required_modules(str(py_file))
+        assert result.detected_modules == []
+
+
+# ──────────────────────────────────────────
+# OOT Detection from GRC Files
+# ──────────────────────────────────────────
+
+
+class TestDetectFromGrc:
+    def test_detects_prefixed_blocks(self, oot, tmp_path):
+        """Detects blocks with OOT module prefix."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text(
+            """
+blocks:
+  - id: lora_sdr_gray_demap
+    name: gray0
+  - id: adsb_demod
+    name: demod0
+  - id: blocks_null_sink
+    name: null0
+"""
+        )
+        result = oot.detect_required_modules(str(grc_file))
+        assert result.detected_modules == ["adsb", "lora_sdr"]
+        assert result.detection_method == "grc_prefix_heuristic"
+
+    def test_detects_exact_match_blocks(self, oot, tmp_path):
+        """Detects blocks that exactly match module name."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text(
+            """
+blocks:
+  - id: osmosdr_source
+    name: src0
+"""
+        )
+        result = oot.detect_required_modules(str(grc_file))
+        assert "osmosdr" in result.detected_modules
+
+    def test_reports_unknown_blocks(self, oot, tmp_path):
+        """Reports blocks that look OOT but aren't in catalog."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text(
+            """
+blocks:
+  - id: unknown_module_block
+    name: blk0
+  - id: another_weird_thing
+    name: blk1
+"""
+        )
+        result = oot.detect_required_modules(str(grc_file))
+        assert "unknown_module_block" in result.unknown_blocks
+        assert "another_weird_thing" in result.unknown_blocks
+
+    def test_ignores_core_blocks(self, oot, tmp_path):
+        """Ignores core GNU Radio blocks."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text(
+            """
+blocks:
+  - id: blocks_null_sink
+    name: null0
+  - id: analog_sig_source_x
+    name: src0
+  - id: digital_constellation_decoder_cb
+    name: dec0
+  - id: qtgui_time_sink_x
+    name: time0
+  - id: filter_fir_filter_xxx
+    name: fir0
+"""
+        )
+        result = oot.detect_required_modules(str(grc_file))
+        assert result.detected_modules == []
+        assert result.unknown_blocks == []
+
+    def test_ignores_special_blocks(self, oot, tmp_path):
+        """Ignores variables, imports, and other special blocks."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text(
+            """
+blocks:
+  - id: variable
+    name: samp_rate
+  - id: variable_qtgui_range
+    name: freq
+  - id: import
+    name: import_0
+  - id: options
+    name: opts
+  - id: pad_source
+    name: in0
+  - id: virtual_sink
+    name: vsink0
+"""
+        )
+        result = oot.detect_required_modules(str(grc_file))
+        assert result.detected_modules == []
+        assert result.unknown_blocks == []
+
+    def test_handles_empty_blocks(self, oot, tmp_path):
+        """Handles GRC with no blocks."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text("blocks: []\n")
+        result = oot.detect_required_modules(str(grc_file))
+        assert result.detected_modules == []
+
+    def test_handles_missing_blocks_key(self, oot, tmp_path):
+        """Handles GRC without blocks key."""
+        grc_file = tmp_path / "test.grc"
+        grc_file.write_text("options:\n  id: test\n")
+        result = oot.detect_required_modules(str(grc_file))
+        assert result.detected_modules == []
+
+
+# ──────────────────────────────────────────
+# Image Recommendation Logic
+# ──────────────────────────────────────────
+
+
+class TestRecommendImage:
+    def test_recommends_base_for_no_modules(self, oot):
+        """Returns base runtime image when no OOT modules."""
+        result = oot._recommend_image([])
+        assert result == "gnuradio-runtime:latest"
+
+    def test_recommends_single_oot_image_if_built(self, oot):
+        """Returns single OOT image tag if already built."""
+        oot._registry["lora_sdr"] = _make_oot_info(
+            "lora_sdr", "gr-oot-lora_sdr:master-abc1234"
+        )
+        result = oot._recommend_image(["lora_sdr"])
+        assert result == "gr-oot-lora_sdr:master-abc1234"
+
+    def test_returns_none_if_single_not_built(self, oot):
+        """Returns None if single module not yet built."""
+        result = oot._recommend_image(["lora_sdr"])
+        assert result is None
+
+    def test_recommends_combo_tag_if_exists(self, oot):
+        """Returns existing combo image tag."""
+        combo_info = ComboImageInfo(
+            combo_key="combo:adsb+lora_sdr",
+            image_tag="gr-combo-adsb-lora_sdr:latest",
+            modules=[],
+            built_at="2025-01-01T00:00:00+00:00",
+        )
+        oot._combo_registry["combo:adsb+lora_sdr"] = combo_info
+        result = oot._recommend_image(["adsb", "lora_sdr"])
+        assert result == "gr-combo-adsb-lora_sdr:latest"
+
+    def test_recommends_combo_tag_format_if_not_built(self, oot):
+        """Returns what combo tag would be if not yet built."""
+        result = oot._recommend_image(["adsb", "lora_sdr"])
+        assert result == "gr-combo-adsb-lora_sdr:latest"
+
+    def test_combo_tag_sorted_alphabetically(self, oot):
+        """Combo tag always uses sorted module names."""
+        result = oot._recommend_image(["lora_sdr", "adsb"])
+        assert result == "gr-combo-adsb-lora_sdr:latest"
+
+
+# ──────────────────────────────────────────
+# Edge Cases and Error Handling
+# ──────────────────────────────────────────
+
+
+class TestDetectionEdgeCases:
+    def test_file_not_found(self, oot, tmp_path):
+        """Raises FileNotFoundError for missing file."""
+        with pytest.raises(FileNotFoundError, match="Flowgraph not found"):
+            oot.detect_required_modules(str(tmp_path / "does_not_exist.py"))
+
+    def test_unsupported_extension(self, oot, tmp_path):
+        """Raises ValueError for unsupported file type."""
+        txt_file = tmp_path / "test.txt"
+        txt_file.write_text("some content")
+        with pytest.raises(ValueError, match="Unsupported file type"):
+            oot.detect_required_modules(str(txt_file))
+
+    def test_result_includes_flowgraph_path(self, oot, tmp_path):
+        """Result includes the analyzed path."""
+        py_file = tmp_path / "my_flowgraph.py"
+        py_file.write_text("from gnuradio import blocks\n")
+        result = oot.detect_required_modules(str(py_file))
+        assert str(py_file) in result.flowgraph_path

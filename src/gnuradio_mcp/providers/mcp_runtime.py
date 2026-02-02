@@ -75,6 +75,9 @@ class McpRuntimeProvider:
 
             # OOT module installation
             if p._has_oot:
+                # Detection (new!)
+                self._mcp.tool(p.detect_oot_modules)
+                # Installation
                 self._mcp.tool(p.install_oot_module)
                 self._mcp.tool(p.list_oot_images)
                 self._mcp.tool(p.remove_oot_image)
@@ -82,7 +85,7 @@ class McpRuntimeProvider:
                 self._mcp.tool(p.build_multi_oot_image)
                 self._mcp.tool(p.list_combo_images)
                 self._mcp.tool(p.remove_combo_image)
-                logger.info("Registered 35 runtime tools (Docker + OOT available)")
+                logger.info("Registered 36 runtime tools (Docker + OOT available)")
             else:
                 logger.info("Registered 29 runtime tools (Docker available)")
         else:

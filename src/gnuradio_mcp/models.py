@@ -411,3 +411,17 @@ class ComboImageResult(BaseModel):
     error: str | None = None
     skipped: bool = False  # True if combo image already existed
     modules_built: list[str] = []  # modules auto-built from catalog first
+
+
+class OOTDetectionResult(BaseModel):
+    """Result of OOT module detection from a flowgraph.
+
+    Analyzes .py or .grc files to identify which OOT modules are required,
+    enabling automatic Docker image selection for launch_flowgraph().
+    """
+
+    flowgraph_path: str
+    detected_modules: list[str]  # OOT modules found (catalog matches)
+    unknown_blocks: list[str] = []  # Blocks that look OOT but aren't in catalog
+    detection_method: str  # "python_imports" | "grc_prefix_heuristic"
+    recommended_image: str | None = None  # Image tag to use (if modules found)
