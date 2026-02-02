@@ -184,8 +184,13 @@ def runtime_mcp_app() -> FastMCP:
 
 @pytest.fixture
 async def runtime_client(runtime_mcp_app: FastMCP):
-    """Create FastMCP client for runtime tools."""
+    """Create FastMCP client for runtime tools.
+
+    Automatically enables runtime mode so runtime tools are available.
+    """
     async with Client(runtime_mcp_app) as client:
+        # Enable runtime mode to register runtime tools dynamically
+        await client.call_tool(name="enable_runtime_mode")
         yield client
 
 

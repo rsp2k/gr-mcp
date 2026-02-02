@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from fastmcp import FastMCP
+from pydantic import BaseModel
 
 from gnuradio_mcp.middlewares.docker import DockerMiddleware
 from gnuradio_mcp.middlewares.oot import OOTInstallerMiddleware
@@ -11,88 +13,201 @@ from gnuradio_mcp.providers.runtime import RuntimeProvider
 logger = logging.getLogger(__name__)
 
 
+class RuntimeModeStatus(BaseModel):
+    """Status of runtime mode and available capabilities."""
+
+    enabled: bool
+    tools_registered: list[str]
+    docker_available: bool
+    oot_available: bool
+
+
 class McpRuntimeProvider:
     """Registers runtime control tools with FastMCP.
 
-    Docker is optional: if unavailable, container lifecycle and visual
-    feedback tools are skipped, but XML-RPC connection/control tools
-    are still registered (for connecting to externally-managed flowgraphs).
+    Uses dynamic tool registration to minimize context usage:
+    - At startup: only mode control tools are registered
+    - When runtime mode is enabled: all runtime tools are registered
+    - When disabled: runtime tools are removed
+
+    This keeps the tool list small when only doing flowgraph design,
+    and expands it when connecting to SDR hardware or running flowgraphs.
     """
 
     def __init__(self, mcp_instance: FastMCP, runtime_provider: RuntimeProvider):
         self._mcp = mcp_instance
         self._provider = runtime_provider
-        self.__init_tools()
+        self._runtime_tools: dict[str, Callable] = {}
+        self._runtime_enabled = False
+        self.__init_mode_tools()
         self.__init_resources()
 
-    def __init_tools(self):
+    def __init_mode_tools(self):
+        """Register only the mode control tools at startup."""
+
+        @self._mcp.tool
+        def get_runtime_mode() -> RuntimeModeStatus:
+            """Check if runtime mode is enabled and what capabilities are available.
+
+            Runtime mode provides tools for:
+            - Connecting to running flowgraphs (XML-RPC, ControlPort)
+            - Launching flowgraphs in Docker containers
+            - Installing OOT modules
+            - Controlling SDR hardware
+
+            Call enable_runtime_mode() to register these tools.
+            """
+            return RuntimeModeStatus(
+                enabled=self._runtime_enabled,
+                tools_registered=list(self._runtime_tools.keys()),
+                docker_available=self._provider._has_docker,
+                oot_available=self._provider._has_oot,
+            )
+
+        @self._mcp.tool
+        def enable_runtime_mode() -> RuntimeModeStatus:
+            """Enable runtime mode, registering all runtime control tools.
+
+            This adds tools for:
+            - XML-RPC connection and variable control
+            - ControlPort/Thrift for performance monitoring
+            - Docker container lifecycle (if Docker available)
+            - OOT module installation (if Docker available)
+
+            Use this when you need to:
+            - Connect to a running flowgraph
+            - Launch flowgraphs in containers
+            - Control SDR hardware
+            - Monitor performance
+            """
+            if self._runtime_enabled:
+                return RuntimeModeStatus(
+                    enabled=True,
+                    tools_registered=list(self._runtime_tools.keys()),
+                    docker_available=self._provider._has_docker,
+                    oot_available=self._provider._has_oot,
+                )
+
+            self._register_runtime_tools()
+            self._runtime_enabled = True
+
+            logger.info(
+                "Runtime mode enabled: registered %d tools",
+                len(self._runtime_tools),
+            )
+
+            return RuntimeModeStatus(
+                enabled=True,
+                tools_registered=list(self._runtime_tools.keys()),
+                docker_available=self._provider._has_docker,
+                oot_available=self._provider._has_oot,
+            )
+
+        @self._mcp.tool
+        def disable_runtime_mode() -> RuntimeModeStatus:
+            """Disable runtime mode, removing runtime tools to reduce context.
+
+            Use this when you're done with runtime operations and want to
+            reduce the tool list for flowgraph design work.
+            """
+            if not self._runtime_enabled:
+                return RuntimeModeStatus(
+                    enabled=False,
+                    tools_registered=[],
+                    docker_available=self._provider._has_docker,
+                    oot_available=self._provider._has_oot,
+                )
+
+            self._unregister_runtime_tools()
+            self._runtime_enabled = False
+
+            logger.info("Runtime mode disabled: removed runtime tools")
+
+            return RuntimeModeStatus(
+                enabled=False,
+                tools_registered=[],
+                docker_available=self._provider._has_docker,
+                oot_available=self._provider._has_oot,
+            )
+
+        logger.info(
+            "Registered 3 mode control tools (runtime mode disabled by default)"
+        )
+
+    def _register_runtime_tools(self):
+        """Dynamically register all runtime tools."""
         p = self._provider
 
-        # Connection management (always available)
-        self._mcp.tool(p.connect)
-        self._mcp.tool(p.disconnect)
-        self._mcp.tool(p.get_status)
+        # Connection management
+        self._add_tool("connect", p.connect)
+        self._add_tool("disconnect", p.disconnect)
+        self._add_tool("get_status", p.get_status)
 
-        # Variable control (always available)
-        self._mcp.tool(p.list_variables)
-        self._mcp.tool(p.get_variable)
-        self._mcp.tool(p.set_variable)
+        # Variable control
+        self._add_tool("list_variables", p.list_variables)
+        self._add_tool("get_variable", p.get_variable)
+        self._add_tool("set_variable", p.set_variable)
 
-        # Flowgraph execution (always available)
-        self._mcp.tool(p.start)
-        self._mcp.tool(p.stop)
-        self._mcp.tool(p.lock)
-        self._mcp.tool(p.unlock)
+        # Flowgraph execution
+        self._add_tool("start", p.start)
+        self._add_tool("stop", p.stop)
+        self._add_tool("lock", p.lock)
+        self._add_tool("unlock", p.unlock)
 
-        # ControlPort/Thrift tools (always available - Phase 2)
-        self._mcp.tool(p.connect_controlport)
-        self._mcp.tool(p.disconnect_controlport)
-        self._mcp.tool(p.get_knobs)
-        self._mcp.tool(p.set_knobs)
-        self._mcp.tool(p.get_knob_properties)
-        self._mcp.tool(p.get_performance_counters)
-        self._mcp.tool(p.post_message)
+        # ControlPort/Thrift tools
+        self._add_tool("connect_controlport", p.connect_controlport)
+        self._add_tool("disconnect_controlport", p.disconnect_controlport)
+        self._add_tool("get_knobs", p.get_knobs)
+        self._add_tool("set_knobs", p.set_knobs)
+        self._add_tool("get_knob_properties", p.get_knob_properties)
+        self._add_tool("get_performance_counters", p.get_performance_counters)
+        self._add_tool("post_message", p.post_message)
 
         # Docker-dependent tools
         if p._has_docker:
             # Container lifecycle
-            self._mcp.tool(p.launch_flowgraph)
-            self._mcp.tool(p.list_containers)
-            self._mcp.tool(p.stop_flowgraph)
-            self._mcp.tool(p.remove_flowgraph)
-            self._mcp.tool(p.connect_to_container)
-            self._mcp.tool(p.connect_to_container_controlport)  # Phase 2
+            self._add_tool("launch_flowgraph", p.launch_flowgraph)
+            self._add_tool("list_containers", p.list_containers)
+            self._add_tool("stop_flowgraph", p.stop_flowgraph)
+            self._add_tool("remove_flowgraph", p.remove_flowgraph)
+            self._add_tool("connect_to_container", p.connect_to_container)
+            self._add_tool(
+                "connect_to_container_controlport", p.connect_to_container_controlport
+            )
 
             # Visual feedback
-            self._mcp.tool(p.capture_screenshot)
-            self._mcp.tool(p.get_container_logs)
+            self._add_tool("capture_screenshot", p.capture_screenshot)
+            self._add_tool("get_container_logs", p.get_container_logs)
 
             # Coverage collection
-            self._mcp.tool(p.collect_coverage)
-            self._mcp.tool(p.generate_coverage_report)
-            self._mcp.tool(p.combine_coverage)
-            self._mcp.tool(p.delete_coverage)
+            self._add_tool("collect_coverage", p.collect_coverage)
+            self._add_tool("generate_coverage_report", p.generate_coverage_report)
+            self._add_tool("combine_coverage", p.combine_coverage)
+            self._add_tool("delete_coverage", p.delete_coverage)
 
             # OOT module installation
             if p._has_oot:
-                # Detection (new!)
-                self._mcp.tool(p.detect_oot_modules)
-                # Installation
-                self._mcp.tool(p.install_oot_module)
-                self._mcp.tool(p.list_oot_images)
-                self._mcp.tool(p.remove_oot_image)
-                # Multi-OOT combo images
-                self._mcp.tool(p.build_multi_oot_image)
-                self._mcp.tool(p.list_combo_images)
-                self._mcp.tool(p.remove_combo_image)
-                logger.info("Registered 36 runtime tools (Docker + OOT available)")
-            else:
-                logger.info("Registered 29 runtime tools (Docker available)")
-        else:
-            logger.info(
-                "Registered 17 runtime tools (Docker unavailable, "
-                "container tools skipped)"
-            )
+                self._add_tool("detect_oot_modules", p.detect_oot_modules)
+                self._add_tool("install_oot_module", p.install_oot_module)
+                self._add_tool("list_oot_images", p.list_oot_images)
+                self._add_tool("remove_oot_image", p.remove_oot_image)
+                self._add_tool("build_multi_oot_image", p.build_multi_oot_image)
+                self._add_tool("list_combo_images", p.list_combo_images)
+                self._add_tool("remove_combo_image", p.remove_combo_image)
+
+    def _unregister_runtime_tools(self):
+        """Remove all dynamically registered runtime tools."""
+        for name in list(self._runtime_tools.keys()):
+            try:
+                self._mcp.remove_tool(name)
+            except Exception as e:
+                logger.warning("Failed to remove tool %s: %s", name, e)
+        self._runtime_tools.clear()
+
+    def _add_tool(self, name: str, func: Callable):
+        """Add a tool and track it for later removal."""
+        self._mcp.add_tool(func)
+        self._runtime_tools[name] = func
 
     def __init_resources(self):
         from gnuradio_mcp.oot_catalog import (
