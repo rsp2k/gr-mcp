@@ -22,15 +22,56 @@ class RuntimeModeStatus(BaseModel):
     oot_available: bool
 
 
+class RootsCapability(BaseModel):
+    """Client roots capability - expose workspace directories to servers."""
+
+    supported: bool = False
+    list_changed: bool | None = None  # Client emits notifications when roots change
+
+
+class SamplingCapability(BaseModel):
+    """Client sampling capability - let servers request LLM completions.
+
+    Enables recursive agent patterns where servers can invoke the client's LLM.
+    """
+
+    supported: bool = False
+    tools: bool = False  # Allow tool use during sampling
+    context: bool = False  # Include context from other servers (deprecated)
+
+
+class ElicitationCapability(BaseModel):
+    """Client elicitation capability - servers can prompt users for input.
+
+    Form mode: collect structured data via forms
+    URL mode: redirect to URLs for OAuth/payment/sensitive data
+    """
+
+    supported: bool = False
+    form: bool = False  # In-band structured data collection
+    url: bool = False  # Out-of-band URL navigation for sensitive flows
+
+
 class ClientCapabilities(BaseModel):
-    """MCP client capability information from initialize handshake."""
+    """MCP client capability information from initialize handshake.
+
+    Based on MCP spec 2025-11-25. Clients advertise which features they support:
+    - roots: Expose workspace/project directories
+    - sampling: Let servers request LLM completions
+    - elicitation: Let servers prompt users for input
+    """
 
     client_name: str | None = None
     client_version: str | None = None
     protocol_version: str | None = None
-    capabilities: dict[str, Any] = {}
-    roots_supported: bool = False
-    sampling_supported: bool = False
+
+    # Structured capability objects
+    roots: RootsCapability = RootsCapability()
+    sampling: SamplingCapability = SamplingCapability()
+    elicitation: ElicitationCapability = ElicitationCapability()
+
+    # Raw capability dict for any unknown/future capabilities
+    raw_capabilities: dict[str, Any] = {}
     experimental: dict[str, Any] = {}
 
 
@@ -179,16 +220,51 @@ class McpRuntimeProvider:
             )
 
             if caps:
+                # Roots capability - workspace directory exposure
                 if hasattr(caps, "roots") and caps.roots is not None:
-                    result.roots_supported = True
-                    result.capabilities["roots"] = {
+                    result.roots = RootsCapability(
+                        supported=True,
+                        list_changed=getattr(caps.roots, "listChanged", None),
+                    )
+                    result.raw_capabilities["roots"] = {
                         "listChanged": getattr(caps.roots, "listChanged", None)
                     }
 
+                # Sampling capability - server-initiated LLM requests
                 if hasattr(caps, "sampling") and caps.sampling is not None:
-                    result.sampling_supported = True
-                    result.capabilities["sampling"] = {}
+                    sampling_obj = caps.sampling
+                    result.sampling = SamplingCapability(
+                        supported=True,
+                        tools=hasattr(sampling_obj, "tools")
+                        and sampling_obj.tools is not None,
+                        context=hasattr(sampling_obj, "context")
+                        and sampling_obj.context is not None,
+                    )
+                    result.raw_capabilities["sampling"] = {
+                        "tools": result.sampling.tools,
+                        "context": result.sampling.context,
+                    }
 
+                # Elicitation capability - server-prompted user input
+                if hasattr(caps, "elicitation") and caps.elicitation is not None:
+                    elicit_obj = caps.elicitation
+                    # Empty object means form-only (backwards compat)
+                    has_form = hasattr(elicit_obj, "form") and elicit_obj.form is not None
+                    has_url = hasattr(elicit_obj, "url") and elicit_obj.url is not None
+                    # If elicitation exists but no sub-caps, default to form
+                    if not has_form and not has_url:
+                        has_form = True
+                    result.elicitation = ElicitationCapability(
+                        supported=True,
+                        form=has_form,
+                        url=has_url,
+                    )
+                    result.raw_capabilities["elicitation"] = {
+                        "form": has_form,
+                        "url": has_url,
+                    }
+
+                # Experimental features
                 if hasattr(caps, "experimental"):
                     result.experimental = caps.experimental or {}
 
