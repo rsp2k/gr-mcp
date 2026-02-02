@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from typing import Any, Callable
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from pydantic import BaseModel
 
 from gnuradio_mcp.middlewares.docker import DockerMiddleware
@@ -20,6 +20,25 @@ class RuntimeModeStatus(BaseModel):
     tools_registered: list[str]
     docker_available: bool
     oot_available: bool
+
+
+class ClientCapabilities(BaseModel):
+    """MCP client capability information from initialize handshake."""
+
+    client_name: str | None = None
+    client_version: str | None = None
+    protocol_version: str | None = None
+    capabilities: dict[str, Any] = {}
+    roots_supported: bool = False
+    sampling_supported: bool = False
+    experimental: dict[str, Any] = {}
+
+
+class ClientRoot(BaseModel):
+    """A root directory advertised by the MCP client."""
+
+    uri: str
+    name: str | None = None
 
 
 class McpRuntimeProvider:
@@ -130,8 +149,73 @@ class McpRuntimeProvider:
                 oot_available=self._provider._has_oot,
             )
 
+        # Debug tools for MCP client inspection
+        @self._mcp.tool
+        async def get_client_capabilities(ctx: Context) -> ClientCapabilities:
+            """Get the connected MCP client's capabilities.
+
+            Returns information about the client including:
+            - Client name and version (e.g., "claude-code" v2.1.15)
+            - MCP protocol version
+            - Supported capabilities (roots, sampling, etc.)
+            - Experimental features
+
+            Useful for debugging MCP connections and understanding
+            what features the client supports.
+            """
+            session = ctx.session
+            client_params = session.client_params if session else None
+
+            if client_params is None:
+                return ClientCapabilities()
+
+            client_info = getattr(client_params, "clientInfo", None)
+            caps = getattr(client_params, "capabilities", None)
+
+            result = ClientCapabilities(
+                client_name=client_info.name if client_info else None,
+                client_version=client_info.version if client_info else None,
+                protocol_version=getattr(client_params, "protocolVersion", None),
+            )
+
+            if caps:
+                if hasattr(caps, "roots") and caps.roots is not None:
+                    result.roots_supported = True
+                    result.capabilities["roots"] = {
+                        "listChanged": getattr(caps.roots, "listChanged", None)
+                    }
+
+                if hasattr(caps, "sampling") and caps.sampling is not None:
+                    result.sampling_supported = True
+                    result.capabilities["sampling"] = {}
+
+                if hasattr(caps, "experimental"):
+                    result.experimental = caps.experimental or {}
+
+            return result
+
+        @self._mcp.tool
+        async def list_client_roots(ctx: Context) -> list[ClientRoot]:
+            """List the root directories advertised by the MCP client.
+
+            Roots represent project directories or workspaces the client
+            wants the server to be aware of. Typically includes the
+            current working directory.
+
+            Returns empty list if roots capability is not supported.
+            """
+            try:
+                roots = await ctx.list_roots()
+                return [
+                    ClientRoot(uri=str(root.uri), name=root.name)
+                    for root in roots
+                ]
+            except Exception as e:
+                logger.warning("Failed to list client roots: %s", e)
+                return []
+
         logger.info(
-            "Registered 3 mode control tools (runtime mode disabled by default)"
+            "Registered 5 mode control tools (runtime mode disabled by default)"
         )
 
     def _register_runtime_tools(self):
