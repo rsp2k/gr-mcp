@@ -128,6 +128,23 @@ class OOTInstallerMiddleware:
             # Idempotent: skip if image already exists
             if not force and self._image_exists(image_tag):
                 existing = self._registry.get(module_name)
+                if existing is None:
+                    # Image exists but registry entry missing — re-register
+                    existing = OOTImageInfo(
+                        module_name=module_name,
+                        image_tag=image_tag,
+                        git_url=git_url,
+                        branch=branch,
+                        git_commit=commit,
+                        base_image=effective_base,
+                        built_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    self._registry[module_name] = existing
+                    self._save_registry()
+                    logger.info(
+                        "Re-registered existing image '%s' for module '%s'",
+                        image_tag, module_name,
+                    )
                 return OOTInstallResult(
                     success=True,
                     image=existing,

@@ -187,6 +187,44 @@ class TestRegistry:
         mw._save_registry()
         assert mw._registry_path.exists()
 
+    def test_load_skips_corrupt_entries(self, oot):
+        """Per-entry validation: one corrupt entry doesn't nuke valid ones."""
+        data = {
+            "good_module": {
+                "module_name": "good_module",
+                "image_tag": "gr-oot-good:main-abc1234",
+                "git_url": "https://example.com/gr-good",
+                "branch": "main",
+                "git_commit": "abc1234",
+                "base_image": "gnuradio-runtime:latest",
+                "built_at": "2025-01-01T00:00:00+00:00",
+            },
+            "bad_module": {
+                "image_id": "sha256:deadbeef",
+                "build_deps": ["libfoo-dev"],
+            },
+        }
+        oot._registry_path.write_text(json.dumps(data))
+        loaded = oot._load_registry()
+        assert "good_module" in loaded
+        assert "bad_module" not in loaded
+
+    def test_build_module_reregisters_orphaned_image(self, oot):
+        """build_module re-registers when image exists but registry empty."""
+        # Mock: _get_remote_commit returns a commit, _image_exists says yes
+        oot._get_remote_commit = MagicMock(return_value="abc1234")
+        oot._image_exists = MagicMock(return_value=True)
+
+        result = oot.build_module(
+            git_url="https://github.com/example/gr-test",
+            branch="main",
+        )
+
+        assert result.success is True
+        assert result.skipped is True
+        assert "test" in oot._registry
+        assert oot._registry["test"].image_tag == "gr-oot-test:main-abc1234"
+
 
 # ──────────────────────────────────────────
 # Image Naming

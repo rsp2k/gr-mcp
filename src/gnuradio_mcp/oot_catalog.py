@@ -139,7 +139,7 @@ CATALOG: dict[str, OOTModuleEntry] = {
             description="FM RDS/RBDS (Radio Data System) decoder",
             category="Broadcast",
             git_url="https://github.com/bastibl/gr-rds",
-            branch="main",
+            branch="maint-3.10",
             homepage="https://github.com/bastibl/gr-rds",
             preinstalled=True,
         ),
