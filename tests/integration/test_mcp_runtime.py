@@ -415,3 +415,97 @@ class TestRuntimeMcpToolsFullWorkflow:
             assert extract_raw_value(result) == freq
 
         await runtime_client.call_tool(name="disconnect")
+
+
+class TestDynamicRuntimeMode:
+    """Test dynamic tool registration via runtime mode toggle."""
+
+    async def test_runtime_mode_starts_disabled(self, runtime_mcp_app: FastMCP):
+        """Runtime mode should be disabled by default."""
+        async with Client(runtime_mcp_app) as client:
+            result = await client.call_tool(name="get_runtime_mode")
+            assert result.data.enabled is False
+            assert result.data.tools_registered == []
+
+    async def test_enable_runtime_mode_registers_tools(self, runtime_mcp_app: FastMCP):
+        """Enabling runtime mode should register runtime tools."""
+        async with Client(runtime_mcp_app) as client:
+            # Check tools before enabling
+            tools_before = await client.list_tools()
+
+            result = await client.call_tool(name="enable_runtime_mode")
+
+            assert result.data.enabled is True
+            assert len(result.data.tools_registered) > 0
+            assert "connect" in result.data.tools_registered
+            assert "list_variables" in result.data.tools_registered
+
+            # Verify tools are actually callable
+            tools_after = await client.list_tools()
+            assert len(tools_after) > len(tools_before)
+
+    async def test_disable_runtime_mode_removes_tools(self, runtime_mcp_app: FastMCP):
+        """Disabling runtime mode should remove runtime tools."""
+        async with Client(runtime_mcp_app) as client:
+            # Enable first
+            await client.call_tool(name="enable_runtime_mode")
+            tools_enabled = await client.list_tools()
+
+            # Now disable
+            result = await client.call_tool(name="disable_runtime_mode")
+
+            assert result.data.enabled is False
+            assert result.data.tools_registered == []
+
+            # Verify tools are actually removed
+            tools_disabled = await client.list_tools()
+            assert len(tools_disabled) < len(tools_enabled)
+
+    async def test_enable_runtime_mode_idempotent(self, runtime_mcp_app: FastMCP):
+        """Enabling runtime mode twice should be safe."""
+        async with Client(runtime_mcp_app) as client:
+            result1 = await client.call_tool(name="enable_runtime_mode")
+            result2 = await client.call_tool(name="enable_runtime_mode")
+
+            assert result1.data.enabled is True
+            assert result2.data.enabled is True
+            assert result1.data.tools_registered == result2.data.tools_registered
+
+    async def test_disable_runtime_mode_idempotent(self, runtime_mcp_app: FastMCP):
+        """Disabling runtime mode twice should be safe."""
+        async with Client(runtime_mcp_app) as client:
+            result1 = await client.call_tool(name="disable_runtime_mode")
+            result2 = await client.call_tool(name="disable_runtime_mode")
+
+            assert result1.data.enabled is False
+            assert result2.data.enabled is False
+
+
+class TestClientCapabilities:
+    """Test MCP client capability inspection tools."""
+
+    async def test_get_client_capabilities_returns_structured_data(
+        self, runtime_mcp_app: FastMCP
+    ):
+        """get_client_capabilities should return structured capability info."""
+        async with Client(runtime_mcp_app) as client:
+            result = await client.call_tool(name="get_client_capabilities")
+
+            # Should have structured capability objects
+            assert result.data is not None
+            assert hasattr(result.data, "roots")
+            assert hasattr(result.data, "sampling")
+            assert hasattr(result.data, "elicitation")
+
+            # Each capability should have 'supported' field
+            assert hasattr(result.data.roots, "supported")
+            assert hasattr(result.data.sampling, "supported")
+            assert hasattr(result.data.elicitation, "supported")
+
+    async def test_list_client_roots_returns_list(self, runtime_mcp_app: FastMCP):
+        """list_client_roots should return a list (may be empty in test)."""
+        async with Client(runtime_mcp_app) as client:
+            result = await client.call_tool(name="list_client_roots")
+
+            # Should return a list (FastMCP test client may not advertise roots)
+            assert isinstance(result.data, list) or result.data is None
